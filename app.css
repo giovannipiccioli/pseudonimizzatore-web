@@ -1,0 +1,56 @@
+:root {
+  --ink: #1d1d1b;
+  --muted: #5f5f5a;
+  --paper: #ffffff;
+  --line: #d9d6cf;
+  --redact: #ffe08a;
+  --tag: #7a5b00;
+  --keep: #d7ecd9;
+  --verify: #f9d3cc;
+  --verify-ink: #9c2b17;
+  --current: #1f5fbf;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; font: 15px/1.5 system-ui, sans-serif; color: var(--ink); background: var(--paper); }
+h1 { margin: 0; font-size: 1.4rem; }
+header p { margin: .25rem 0; color: var(--muted); }
+.keys { font-size: .85em; }
+kbd { font: .9em ui-monospace, monospace; padding: 0 .25em; border: 1px solid var(--line); border-radius: 3px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .75rem 0; }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) 24rem; gap: 1rem; align-items: start; }
+#document { white-space: pre-wrap; overflow-wrap: anywhere; font-family: Georgia, serif; line-height: 1.6;
+            max-height: 80vh; overflow: auto; padding: 0 1rem; border-left: 1px solid var(--line); }
+#document:empty { display: none; }
+aside { position: sticky; top: 16px; max-height: 80vh; overflow: auto; }
+aside h2 { margin: 1rem 0 .25rem; font-size: 1rem; }
+aside ul, dialog ul { margin: 0; padding: 0; list-style: none; }
+aside ul:empty::after { content: "Nessuno"; color: var(--muted); }
+aside li, dialog li { padding: .3rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+aside button { font-size: .85em; }
+
+mark { cursor: pointer; }
+mark.redact { background: var(--redact); }
+mark.redact::after { content: attr(data-tag); margin-left: .15em; vertical-align: super;
+                     font: 600 .65em system-ui, sans-serif; color: var(--tag); }
+mark.keep { background: var(--keep); cursor: auto; }
+mark.verify { background: var(--verify); }
+mark.verify::after { content: "da verificare"; margin-left: .15em; vertical-align: super;
+                     font: 600 .65em system-ui, sans-serif; color: var(--verify-ink); }
+.current { outline: 2px solid var(--current); outline-offset: 1px; }
+
+#menu { position: fixed; z-index: 1; display: flex; flex-direction: column; gap: .25rem; max-width: 18rem;
+        padding: .5rem; background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
+        box-shadow: 0 2px 8px rgb(0 0 0 / .15); }
+#menu[hidden] { display: none; }
+#menu p { margin: 0; font-size: .85em; color: var(--muted); }
+
+dialog { max-width: min(40rem, 100vw - 32px); }
+dialog h2 { margin-top: 0; font-size: 1.1rem; }
+dialog ul { max-height: 50vh; overflow: auto; }
+
+@media (max-width: 800px) {
+  main { grid-template-columns: 1fr; }
+  #document, aside { position: static; max-height: none; }
+}

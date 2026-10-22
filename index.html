@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pseudonimizzatore</title>
+<link rel="stylesheet" href="app.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header>
+  <h1>Pseudonimizzatore</h1>
+  <p>Il documento viene elaborato in questo browser e non lascia il tuo dispositivo.</p>
+  <div class="toolbar">
+    <label>Documento (.txt, .md, .docx) <input id="open" type="file" accept=".txt,.md,.docx" disabled></label>
+    <button id="add-person" type="button" disabled>Oscura la selezione: persona</button>
+    <button id="add-other" type="button" disabled>Oscura la selezione: altro dato</button>
+    <button id="export-txt" type="button" disabled>Scarica .txt</button>
+    <button id="export-docx" type="button" disabled>Scarica .docx</button>
+  </div>
+  <p id="status" role="status">Caricamento del motore…</p>
+  <p class="keys">Fai clic su una parte evidenziata per decidere. Tasti: <kbd>n</kbd> / <kbd>p</kbd>
+    successivo / precedente da verificare, <kbd>Invio</kbd> aggiungi, <kbd>Canc</kbd> ignora,
+    <kbd>⌘Z</kbd> annulla, <kbd>⇧⌘Z</kbd> ripeti.</p>
+</header>
+<main>
+  <article id="document"></article>
+  <aside>
+    <section><h2>Da verificare <span id="findings-count"></span></h2><ul id="findings"></ul></section>
+    <section><h2>Avvisi</h2><ul id="warnings"></ul></section>
+    <section><h2>Oscurati <span id="redacted-count"></span></h2><ul id="redacted"></ul></section>
+    <section><h2>Lasciati in chiaro <span id="kept-count"></span></h2><ul id="kept"></ul></section>
+    <section><h2>Le tue modifiche</h2><ul id="edits"></ul></section>
+  </aside>
+</main>
+<div id="menu" role="menu" hidden></div>
+<dialog id="confirm">
+  <form method="dialog">
+    <h2>Restano punti da controllare</h2>
+    <p>Il file potrebbe contenere ancora dati personali:</p>
+    <ul id="confirm-list"></ul>
+    <p><button value="cancel" autofocus>Torna alla revisione</button>
+       <button id="confirm-export">Scarica comunque</button></p>
+  </form>
+</dialog>
+<script nomodule>
+  document.getElementById("status").textContent =
+    "Browser non supportato: usa una versione recente di Chrome, Edge, Firefox o Safari.";
+</script>
+</body>
+</html>
