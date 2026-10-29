@@ -50,8 +50,8 @@ or so says **"Motore pronto"**. From then on, each document takes a fraction of 
 ## 2. A first document
 
 The repository includes an invented decision to try the page on,
-[`examples/esempio_sentenza.txt`](examples/esempio_sentenza.txt). Click **Choose file**
-(**Scegli file**) and open it.
+[`examples/esempio_sentenza.txt`](examples/esempio_sentenza.txt). Click **Apri documento** and open it, or use **Prova con un esempio** on the
+welcome screen to load it directly.
 
 The text appears on the left with three kinds of highlight:
 
@@ -90,15 +90,14 @@ Each correction is applied at once to the whole document, and the tags keep thei
 ### Something should be replaced but isn't
 
 In the example, the surveyor "geometra Brambillasca" has no title the engine recognises and
-stays in clear. **Select it with the mouse** and click **Oscura la selezione: persona**
+stays in clear. **Select it with the mouse** and click **Persona** in the **Oscura la selezione** toolbar
 ("redact the selection: person").
 
 ![Selecting a surname the engine missed](docs/images/3-selezione.png)
 
 The name becomes `Nominativo_5` everywhere it appears, in capitals or not. Select a full
 name and its other forms are found too: the surname alone and "SURNAME Name". For data that
-is not a person (a policy number, a cadastral reference) use **Oscura la selezione: altro
-dato** ("redact the selection: other data"). That replaces exactly that text wherever it
+is not a person (a policy number, a cadastral reference) use **Altro dato** in the same toolbar ("redact the selection: other data"). That replaces exactly that text wherever it
 appears.
 
 ### Something is replaced but should stay
@@ -136,7 +135,8 @@ did not connect, for example an OCR typo.
 ### Undo
 
 <kbd>⌘Z</kbd> undoes and <kbd>⇧⌘Z</kbd> redoes (<kbd>Ctrl</kbd> on Windows and Linux). In
-**Le tue modifiche**, each correction also has its own **Annulla** (undo) button.
+**Le tue modifiche**, each correction also has its own **Annulla** (undo) button. The document toolbar also
+has **Annulla** and **Ripeti** buttons.
 
 ## 4. Saving
 

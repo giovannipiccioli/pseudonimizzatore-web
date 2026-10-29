@@ -52,8 +52,8 @@ secondo.
 ## 2. Un primo documento
 
 Nel repository c'è una sentenza inventata su cui provare la pagina,
-[`examples/esempio_sentenza.txt`](examples/esempio_sentenza.txt). Fai clic su **Scegli file**
-e aprila.
+[`examples/esempio_sentenza.txt`](examples/esempio_sentenza.txt). Fai clic su **Apri documento**
+e aprila, oppure scegli **Prova con un esempio** nella schermata iniziale.
 
 Il testo compare a sinistra con tre tipi di evidenziazione:
 
@@ -94,14 +94,14 @@ numero.
 ### Qualcosa andrebbe sostituito e non lo è
 
 Nell'esempio il «geometra Brambillasca» non ha un titolo che il motore riconosce e resta in
-chiaro. **Selezionalo con il mouse** e fai clic su **Oscura la selezione: persona**.
+chiaro. **Selezionalo con il mouse** e fai clic su **Persona** nella barra **Oscura la selezione**.
 
 ![Selezione di un cognome sfuggito al motore](docs/images/3-selezione.png)
 
 Il nome diventa `Nominativo_5` ovunque compaia, in maiuscolo o in minuscolo. Se selezioni un
 nome completo, vengono trovate anche le sue altre forme: il solo cognome e «COGNOME Nome». Per
-un dato che non è una persona (un numero di polizza, un riferimento catastale) usa **Oscura la
-selezione: altro dato**, che sostituisce esattamente quel testo ovunque compaia.
+un dato che non è una persona (un numero di polizza, un riferimento catastale) usa **Altro
+dato** nella stessa barra, che sostituisce esattamente quel testo ovunque compaia.
 
 ### Qualcosa è sostituito e dovrebbe restare
 
@@ -138,7 +138,8 @@ grafie che il motore non ha collegato, per esempio per un errore di OCR.
 ### Annullare
 
 <kbd>⌘Z</kbd> annulla e <kbd>⇧⌘Z</kbd> ripete (<kbd>Ctrl</kbd> su Windows e Linux). In **Le
-tue modifiche** ogni correzione ha anche il suo pulsante **Annulla**.
+tue modifiche** ogni correzione ha anche il suo pulsante **Annulla**. La barra del documento
+offre inoltre i pulsanti **Annulla** e **Ripeti**.
 
 ## 4. Salvare
 

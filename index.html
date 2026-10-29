@@ -3,46 +3,164 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff">
 <title>Pseudonimizzatore</title>
 <link rel="stylesheet" href="app.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
-<header>
-  <h1>Pseudonimizzatore</h1>
-  <p>Il documento viene elaborato in questo browser e non lascia il tuo dispositivo.</p>
-  <div class="toolbar">
-    <label>Documento (.txt, .md, .docx) <input id="open" type="file" accept=".txt,.md,.docx" disabled></label>
-    <button id="add-person" type="button" disabled>Oscura la selezione: persona</button>
-    <button id="add-other" type="button" disabled>Oscura la selezione: altro dato</button>
-    <button id="export-txt" type="button" disabled>Scarica .txt</button>
-    <button id="export-docx" type="button" disabled>Scarica .docx</button>
+<a class="skip-link" href="#workspace">Vai al documento</a>
+<div class="app-shell">
+  <div class="intro">
+    <div>
+      <p class="eyebrow">STRUMENTI PER IL LAVORO GIURIDICO</p>
+      <h1>Pseudonimizzatore</h1>
+      <p class="intro-copy">Proteggi i dati personali. Conserva il senso del documento.</p>
+      <p class="privacy"><span aria-hidden="true">●</span> I tuoi documenti restano sul tuo dispositivo</p>
+    </div>
+    <ol class="steps" aria-label="Come funziona">
+      <li><span>01</span> Apri</li>
+      <li><span>02</span> Verifica</li>
+      <li><span>03</span> Scarica</li>
+    </ol>
   </div>
-  <p id="status" role="status">Caricamento del motore…</p>
-  <p class="keys">Fai clic su una parte evidenziata per decidere. Tasti: <kbd>n</kbd> / <kbd>p</kbd>
-    successivo / precedente da verificare, <kbd>Invio</kbd> aggiungi, <kbd>Canc</kbd> ignora,
-    <kbd>⌘Z</kbd> annulla, <kbd>⇧⌘Z</kbd> ripeti.</p>
-</header>
-<main>
-  <article id="document"></article>
-  <aside>
-    <section><h2>Da verificare <span id="findings-count"></span></h2><ul id="findings"></ul></section>
-    <section><h2>Avvisi</h2><ul id="warnings"></ul></section>
-    <section><h2>Oscurati <span id="redacted-count"></span></h2><ul id="redacted"></ul></section>
-    <section><h2>Lasciati in chiaro <span id="kept-count"></span></h2><ul id="kept"></ul></section>
-    <section><h2>Le tue modifiche</h2><ul id="edits"></ul></section>
-  </aside>
-</main>
-<div id="menu" role="menu" hidden></div>
-<dialog id="confirm">
+
+  <div class="file-bar">
+    <div class="file-controls">
+      <label class="file-picker primary">
+        <input id="open" type="file" accept=".txt,.md,.docx" aria-label="Apri documento" aria-describedby="file-formats" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M5 15v5h14v-5"/></svg>
+        Apri documento
+      </label>
+      <span id="file-formats" class="file-formats">.txt, .md, .docx</span>
+    </div>
+    <div class="exports" role="group" aria-label="Scarica il documento pseudonimizzato">
+      <button id="export-txt" type="button" disabled>Scarica .txt</button>
+      <button id="export-docx" type="button" disabled>Scarica .docx <span aria-hidden="true">↓</span></button>
+    </div>
+  </div>
+  <p id="status" role="status" data-state="busy">Caricamento del motore…</p>
+
+  <main id="workspace" tabindex="-1">
+    <section class="document-card" aria-labelledby="document-title">
+      <div class="card-heading">
+        <div class="document-heading">
+          <p class="eyebrow">IL TUO DOCUMENTO</p>
+          <h2 id="document-title">Uno spazio per leggere con cura</h2>
+        </div>
+        <span id="document-format" class="format-badge" hidden></span>
+      </div>
+      <div id="document-tools" hidden>
+        <div class="selection-tools" role="group" aria-label="Oscura il testo selezionato">
+          <span>Oscura la selezione:</span>
+          <button id="add-person" type="button" disabled>Persona</button>
+          <button id="add-other" type="button" disabled>Altro dato</button>
+        </div>
+        <div class="history-tools" role="group" aria-label="Cronologia delle modifiche">
+          <button id="undo" type="button" disabled><span aria-hidden="true">↶</span> Annulla</button>
+          <button id="redo" type="button" disabled><span aria-hidden="true">↷</span> Ripeti</button>
+        </div>
+      </div>
+      <div id="empty-state" class="empty-state">
+        <svg class="document-illustration" viewBox="0 0 120 136" fill="none" aria-hidden="true">
+          <path class="sheet" d="M24 8h52l22 22v94H24z"/>
+          <path class="fold" d="M76 8v22h22"/>
+          <path class="highlight" d="M36 64h48M36 89h30"/>
+          <path class="text-lines" d="M36 45h28M36 62h48M36 75h42M36 88h48M36 101h31"/>
+          <path class="pencil" d="m87 108 20-20 5 5-20 20-7 2z"/>
+        </svg>
+        <h3>Il primo passo è aprire un documento.</h3>
+        <p>Troverai i dati da oscurare evidenziati nel testo.<br>Potrai controllare ogni scelta prima di scaricare la copia.</p>
+        <button id="example" type="button" class="text-button" disabled>Prova con un esempio <span aria-hidden="true">→</span></button>
+        <span class="empty-note">Una sentenza con nomi e dati inventati.</span>
+      </div>
+      <article id="document" aria-label="Testo originale con evidenziazioni" tabindex="0" hidden></article>
+      <div class="legend" aria-label="Legenda delle evidenziazioni">
+        <span><i class="swatch redact" aria-hidden="true"></i> Oscurato</span>
+        <span><i class="swatch keep" aria-hidden="true"></i> In chiaro</span>
+        <span><i class="swatch verify" aria-hidden="true"></i> Da verificare</span>
+      </div>
+    </section>
+
+    <aside class="review-card" aria-labelledby="review-title">
+      <div class="card-heading">
+        <div><p class="eyebrow">IL CONTROLLO RESTA A TE</p><h2 id="review-title">La tua revisione</h2></div>
+      </div>
+      <div id="review-empty" class="review-empty">
+        <p>Una volta aperto il documento, qui troverai i dati riconosciuti e i punti da verificare.</p>
+        <ol>
+          <li><strong>Controlla le evidenziazioni</strong><span>Fai clic su un dato per decidere se lasciarlo in chiaro.</span></li>
+          <li><strong>Aggiungi ciò che manca</strong><span>Seleziona nel testo un nome o un dato da oscurare.</span></li>
+          <li><strong>Salva la tua copia</strong><span>Scarica il documento con i segnaposto al posto dei dati.</span></li>
+        </ol>
+      </div>
+      <div id="review-sections" hidden>
+        <details class="review-section" id="findings-section" open>
+          <summary>Da verificare <span class="count verify-count" id="findings-count">0</span></summary>
+          <ul id="findings" data-empty="Nessun punto segnalato. Rileggi comunque il documento."></ul>
+        </details>
+        <details class="review-section" id="warnings-section" open hidden>
+          <summary>Avvisi <span class="count verify-count" id="warnings-count">0</span></summary>
+          <ul id="warnings"></ul>
+        </details>
+        <details class="review-section" open>
+          <summary>Oscurati <span class="count" id="redacted-count">0</span></summary>
+          <ul id="redacted" data-empty="Nessun dato oscurato."></ul>
+        </details>
+        <details class="review-section">
+          <summary>Lasciati in chiaro <span class="count" id="kept-count">0</span></summary>
+          <ul id="kept" data-empty="Nessuna voce."></ul>
+        </details>
+        <details class="review-section">
+          <summary>Le tue modifiche <span class="count" id="edits-count">0</span></summary>
+          <ul id="edits" data-empty="Non hai ancora apportato modifiche."></ul>
+        </details>
+      </div>
+      <details class="keyboard-help">
+        <summary>Scorciatoie da tastiera</summary>
+        <dl>
+          <div><dt><kbd>n</kbd> / <kbd>p</kbd></dt><dd>Punto successivo / precedente</dd></div>
+          <div><dt><kbd>Invio</kbd></dt><dd>Oscura il punto selezionato</dd></div>
+          <div><dt><kbd>Canc</kbd></dt><dd>Ignora il punto selezionato</dd></div>
+          <div><dt><kbd>⌘Z</kbd> / <kbd>⇧⌘Z</kbd></dt><dd>Annulla / ripeti</dd></div>
+        </dl>
+      </details>
+    </aside>
+  </main>
+  <footer class="page-footer">
+    <p>È pseudonimizzazione: rileggi sempre il risultato prima di condividerlo.</p>
+    <p>Elaborazione locale · Nessun documento inviato</p>
+  </footer>
+</div>
+<div id="menu" role="group" aria-label="Azioni sull’evidenziazione" hidden></div>
+<dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-description">
   <form method="dialog">
-    <h2>Restano punti da controllare</h2>
-    <p>Il file potrebbe contenere ancora dati personali:</p>
+    <p class="eyebrow">UN ULTIMO CONTROLLO</p>
+    <h2 id="confirm-title">Restano punti da controllare</h2>
+    <p id="confirm-description">Il file potrebbe contenere ancora dati personali:</p>
     <ul id="confirm-list"></ul>
-    <p><button value="cancel" autofocus>Torna alla revisione</button>
-       <button id="confirm-export">Scarica comunque</button></p>
+    <div class="dialog-actions">
+      <button value="cancel" autofocus>Torna alla revisione</button>
+      <button id="confirm-export" class="primary" value="export">Scarica comunque</button>
+    </div>
   </form>
 </dialog>
+<dialog id="retag" aria-labelledby="retag-title" aria-describedby="retag-description">
+  <form id="retag-form">
+    <p class="eyebrow">MODIFICA IL SEGNAPOSTO</p>
+    <h2 id="retag-title">Cambia segnaposto</h2>
+    <p id="retag-description">Puoi scegliere un nuovo segnaposto, per esempio <code>Attore_1</code>. Per unire due entità, inserisci il segnaposto dell’altra voce oscurata.</p>
+    <label class="retag-field" for="retag-input">Nuovo segnaposto</label>
+    <input id="retag-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="retag-help retag-error">
+    <p id="retag-help" class="field-help">Usa lettere, un trattino basso e un numero.</p>
+    <p id="retag-error" class="field-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="retag-cancel" type="button">Annulla</button>
+      <button class="primary" type="submit">Applica</button>
+    </div>
+  </form>
+</dialog>
+<noscript><p class="no-script">Per elaborare i documenti nel browser, abilita JavaScript.</p></noscript>
 <script nomodule>
   document.getElementById("status").textContent =
     "Browser non supportato: usa una versione recente di Chrome, Edge, Firefox o Safari.";

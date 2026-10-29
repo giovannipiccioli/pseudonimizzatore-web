@@ -47,9 +47,11 @@ let items = [];        // findings the reviewer has not answered yet
 let cursor = null;     // start of the item n/p last moved to
 let latest = 0;        // the last analysis asked for: older answers are dropped
 let saving = null;     // the format to save once the reviewer confirms
+let retagging = null;  // entity currently open in the change-placeholder dialog
 
-function status(message) {
+function status(message, state = "ready") {
   $("status").textContent = message;
+  $("status").dataset.state = state;
 }
 
 // --- the engine, behind the worker -----------------------------------------------------
@@ -63,7 +65,7 @@ worker.onmessage = ({ data }) => {
   if ("error" in data) reject(Object.assign(new Error(data.error), { refused: data.refused }));
   else resolve(data.result);
 };
-worker.onerror = (event) => status(`Impossibile avviare il motore: ${event.message || "errore nel worker"}`);
+worker.onerror = (event) => status(`Impossibile avviare il motore: ${event.message || "errore nel worker"}`, "error");
 
 function call(name, ...args) {
   return new Promise((resolve, reject) => {
@@ -76,6 +78,7 @@ async function start() {
   const begin = performance.now();
   await call("ready");
   $("open").disabled = false;
+  $("example").disabled = false;
   status(`Motore pronto in ${((performance.now() - begin) / 1000).toFixed(1)} s. `
          + "Apri un file .txt, .md o .docx.");
 }
@@ -98,18 +101,18 @@ async function openFile(file) {
   let docx = null;     // a .docx's own bytes, to write the tags back into
   try {
     if (extension === "docx") {
-      status("Lettura del documento Word…");
+      status("Lettura del documento Word…", "busy");
       docx = await file.arrayBuffer();
       raw = await call("docx_text", docx.slice(0));
     } else if (extension === "txt" || extension === "md") {
       raw = await readText(file);
     } else {
-      return status("Formato non supportato: apri un file .txt, .md o .docx.");
+      return status("Formato non supportato: apri un file .txt, .md o .docx.", "error");
     }
   } catch (error) {
-    return status(error.refused ? error.message : `Impossibile leggere ${file.name}: ${error.message}`);
+    return status(error.refused ? error.message : `Impossibile leggere ${file.name}: ${error.message}`, "error");
   }
-  if (!raw.trim()) return status(`${file.name} non contiene testo.`);
+  if (!raw.trim()) return status(`${file.name} non contiene testo.`, "error");
   doc = { name: file.name, raw, docx };
   actions = [];
   past = [];
@@ -152,7 +155,8 @@ async function analyse() {
   const id = ++latest;
   hideMenu();
   $("export-txt").disabled = $("export-docx").disabled = true;
-  status("Analisi in corso…");
+  $("workspace").setAttribute("aria-busy", "true");
+  status("Analisi in corso…", "busy");
   const edits = { people: [], terms: [], exclude: [], keep_spans: [], merge: [], placeholders: [],
                   prior_tags: Object.entries(priorTags) };
   for (const action of actions) {
@@ -165,7 +169,10 @@ async function analyse() {
     // A .docx's text is analysed as it is, so offsets point into its runs.
     answer = JSON.parse(await call("review", doc.raw, JSON.stringify(edits), !doc.docx));
   } catch (error) {
-    if (id === latest) status(`Errore nell'analisi: ${error.message}`);
+    if (id === latest) {
+      $("workspace").setAttribute("aria-busy", "false");
+      status(`Errore nell'analisi: ${error.message}`, "error");
+    }
     return;
   }
   if (id !== latest) return;
@@ -176,6 +183,15 @@ async function analyse() {
   items = reviewItems();
   showDocument();
   showPanel();
+  $("empty-state").hidden = $("review-empty").hidden = true;
+  $("document").hidden = $("document-tools").hidden = $("review-sections").hidden = false;
+  $("document-title").textContent = doc.name;
+  $("document-format").textContent = doc.name.split(".").pop().toUpperCase();
+  $("document-format").hidden = false;
+  $("undo").disabled = !past.length;
+  $("redo").disabled = !future.length;
+  $("add-person").disabled = $("add-other").disabled = !selection();
+  $("workspace").setAttribute("aria-busy", "false");
   showCurrent();
   $("export-txt").disabled = $("export-docx").disabled = false;
   status(`${doc.name}: analizzato in ${Math.round(performance.now() - begin)} ms.`);
@@ -226,20 +242,41 @@ function keepEverywhere(entity) {
   change({ type: "exclude", value: valueOf(entity.entity_id), aliases: entity.aliases });
 }
 
-// One prompt renames a tag, or merges the entity into the one whose tag is typed.
+// A page dialog, rather than window.prompt(), works in embedded browsers too.  A typed
+// tag either renames this entity or merges it into the matching redacted entity.
 function retag(entity) {
   const from = entity.entity_id;
-  const tag = prompt(`Nuovo segnaposto per ${from} (es. Attore_1).\n`
-                     + "Scrivi il segnaposto di un'altra voce oscurata per unirle.", from)?.trim();
-  if (!tag || tag === from) return;
+  retagging = entity;
+  $("retag-title").textContent = `Cambia ${from}`;
+  $("retag-input").value = from;
+  $("retag-error").hidden = true;
+  $("retag").showModal();
+  $("retag-input").focus();
+  $("retag-input").select();
+}
+
+function applyRetag(event) {
+  event.preventDefault();
+  const entity = retagging;
+  if (!entity) return;
+  const from = entity.entity_id;
+  const tag = $("retag-input").value.trim();
+  const showError = (message) => {
+    $("retag-error").textContent = message;
+    $("retag-error").hidden = false;
+    $("retag-input").focus();
+  };
+  if (!tag || tag === from) return $("retag").close();
   const other = result.entities.find((e) => e.action === "redact" && e.entity_id === tag);
   if (other && editable(other)) {
+    $("retag").close();
     change({ type: "merge", value: valueOf(from), into: valueOf(tag), from, to: tag });
   } else if (other) {
-    status(`${tag} è un cognome condiviso da più persone: non si può unire.`);
+    showError(`${tag} è un cognome condiviso da più persone: non si può unire.`);
   } else if (!TAG.test(tag)) {
-    status("Segnaposto non valido: usa lettere, un trattino basso e un numero, es. Attore_1.");
+    showError("Segnaposto non valido: usa lettere, un trattino basso e un numero, es. Attore_1.");
   } else {
+    $("retag").close();
     change({ type: "rename", value: valueOf(from), from, tag });
   }
 }
@@ -261,6 +298,11 @@ function showDocument() {
     mark.textContent = result.text.slice(span.start, span.end);
     mark.dataset[span.mark === "verify" ? "item" : "decision"] = span.index;
     if (span.tag) mark.dataset.tag = span.tag;
+    if (span.mark !== "keep") {
+      mark.tabIndex = 0;
+      mark.setAttribute("role", "button");
+      mark.setAttribute("aria-label", `${mark.textContent}: ${span.tag || "da verificare"}. Mostra azioni`);
+    }
     parts.append(mark);
     at = span.end;
   }
@@ -286,6 +328,8 @@ function showMenu(mark, title, choices) {
   $("menu").style.left = `${Math.max(8, Math.min(box.left, innerWidth - 300))}px`;
   $("menu").style.top = `${box.bottom + 4}px`;
   $("menu").hidden = false;
+  // Keep the menu on screen even for a highlight near the bottom of the reader.
+  $("menu").style.top = `${Math.max(8, Math.min(box.bottom + 4, innerHeight - $("menu").offsetHeight - 8))}px`;
   $("menu").querySelector("button:enabled")?.focus();
 }
 
@@ -317,43 +361,61 @@ document.addEventListener("mousedown", (event) => {
   if (!event.target.closest("#menu, mark")) hideMenu();
 });
 $("document").addEventListener("scroll", hideMenu);
+$("document").addEventListener("keydown", (event) => {
+  if (event.target.matches("mark[role=button]") && ["Enter", " "].includes(event.key)) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.target.click();
+  }
+});
 
 // --- the panel -------------------------------------------------------------------------
 
 function row(text, ...buttons) {
   const li = document.createElement("li");
-  li.append(text);
-  for (const element of buttons) li.append(" ", element);
+  const description = document.createElement("p");
+  description.textContent = text;
+  li.append(description);
+  if (buttons.length) {
+    const controls = document.createElement("div");
+    controls.className = "row-actions";
+    controls.append(...buttons);
+    li.append(controls);
+  }
   return li;
 }
 
 function showPanel() {
-  $("findings-count").textContent = `(${items.length})`;
+  $("findings-count").textContent = items.length;
   $("findings").replaceChildren(...items.map((item) => {
     const li = row(`«${item.text}»: ${reason(item)}`,
                    button(item.kind === "PERSON" ? "Aggiungi come persona" : "Aggiungi come dato",
                           () => accept(item)),
                    button("Ignora", () => dismiss(item)));
     li.onclick = (event) => {
-      if (event.target === li) { cursor = item.start; showCurrent(); }
+      if (!event.target.closest("button")) { cursor = item.start; showCurrent(); }
     };
     return li;
   }));
-  $("warnings").replaceChildren(...warnings().map((warning) => row(warning)));
+  const notices = warnings();
+  $("warnings").replaceChildren(...notices.map((warning) => row(warning)));
+  $("warnings-count").textContent = notices.length;
+  $("warnings-section").hidden = !notices.length;
   const redacted = result.entities.filter((entity) => entity.action === "redact");
   const kept = result.entities.filter((entity) => entity.action === "keep");
-  $("redacted-count").textContent = `(${redacted.length})`;
+  $("redacted-count").textContent = redacted.length;
   $("redacted").replaceChildren(...redacted.map((entity) => editable(entity)
     ? row(`${entity.entity_id}: ${quote(entity.aliases)} ×${entity.spans.length}`,
           button("Lascia in chiaro", () => keepEverywhere(entity)),
           button("Cambia segnaposto…", () => retag(entity)))
     : row(`${entity.entity_id}: ${quote(entity.aliases)} ×${entity.spans.length} (cognome condiviso)`)));
-  $("kept-count").textContent = `(${kept.length})`;
+  $("kept-count").textContent = kept.length;
   $("kept").replaceChildren(...kept.map((entity) => row(
     `${quote(entity.aliases)} (${entity.kind === "USER" ? "scelta tua" : entity.kind}) ×${entity.spans.length}`)));
   $("edits").replaceChildren(...actions.map((action) => row(
     ACTIONS[action.type](action)[3],
     button("Annulla", () => commit(actions.filter((other) => other !== action))))));
+  $("edits-count").textContent = actions.length;
 }
 
 // --- keyboard --------------------------------------------------------------------------
@@ -377,6 +439,7 @@ function showCurrent() {
   for (const element of document.querySelectorAll(".current")) element.classList.remove("current");
   const index = currentIndex();
   if (index < 0) return;
+  $("findings-section").open = true;
   for (const element of [$("document").querySelector(`[data-item="${index}"]`), $("findings").children[index]]) {
     element?.classList.add("current");
     element?.scrollIntoView({ block: "nearest" });
@@ -395,7 +458,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") hideMenu();
   else if (event.key === "n") move(1);
   else if (event.key === "p") move(-1);
-  else if (event.key === "Enter" && item && !event.target.closest?.("button")) accept(item);
+  else if (event.key === "Enter" && item && !event.target.closest?.("button, summary, [role=button], a")) accept(item);
   else if ((event.key === "Delete" || event.key === "Backspace") && item) dismiss(item);
   else return;
   event.preventDefault();
@@ -457,6 +520,19 @@ $("open").onchange = async (event) => {
   event.target.value = "";
   if (file) await openFile(file);
 };
+$("example").onclick = async () => {
+  $("example").disabled = $("open").disabled = true;
+  status("Apertura dell’esempio…", "busy");
+  try {
+    const response = await fetch(new URL("examples/esempio_sentenza.txt", import.meta.url));
+    if (!response.ok) throw new Error("esempio non disponibile");
+    await openFile(new File([await response.blob()], "esempio_sentenza.txt"));
+  } catch (error) {
+    status(`Impossibile aprire l’esempio: ${error.message}`, "error");
+  } finally {
+    $("example").disabled = $("open").disabled = false;
+  }
+};
 document.addEventListener("selectionchange", () => {
   $("add-person").disabled = $("add-other").disabled = !(result && selection());
 });
@@ -466,13 +542,18 @@ for (const id of ["add-person", "add-other"]) {
 }
 $("add-person").onclick = () => selection() && change({ type: "person", text: selection() });
 $("add-other").onclick = () => selection() && change({ type: "term", text: selection() });
+$("undo").onclick = undo;
+$("redo").onclick = redo;
 $("export-txt").onclick = () => exportAs("txt");
 $("export-docx").onclick = () => exportAs("docx");
 $("confirm-export").onclick = () => save(saving);   // the dialog's form closes it
+$("retag-form").onsubmit = applyRetag;
+$("retag-cancel").onclick = () => $("retag").close();
+$("retag").onclose = () => { retagging = null; };
 if (!/Mac|iPhone|iPad/.test(navigator.userAgent)) {
   for (const key of document.querySelectorAll("kbd")) {
     key.textContent = key.textContent.replace("⇧⌘", "Ctrl+Maiusc+").replace("⌘", "Ctrl+");
   }
 }
 
-start().catch((error) => status(`Impossibile avviare il motore: ${error.message}`));
+start().catch((error) => status(`Impossibile avviare il motore: ${error.message}`, "error"));
