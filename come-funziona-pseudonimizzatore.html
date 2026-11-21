@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff">
+<title>Come funziona · Pseudonimizzatore</title>
+<link rel="stylesheet" href="app.css?v=5">
+</head>
+<body>
+<div class="app-shell about-shell">
+  <a class="about-back" href="./">← Pseudonimizzatore</a>
+  <header class="about-intro">
+    <h1>Come funziona</h1>
+    <p>Lo pseudonimizzatore viene caricato dal sito nel browser. L’apertura, l’analisi e la revisione dei documenti avvengono sul dispositivo e nessun documento viene inviato al sito.</p>
+  </header>
+
+  <main class="about-content">
+    <div class="document-card process">
+      <!-- Only the program arrow crosses the device's border, and it points in. -->
+      <figure class="flow" aria-label="Il programma viene caricato dal sito nel browser. In seguito il documento viene aperto da un file del dispositivo, analizzato e rivisto nel browser, e la copia viene salvata sul dispositivo. Nessuna freccia esce dal dispositivo.">
+        <div class="flow-source">
+          <p class="flow-site">Dal sito <strong>Pseudonimizzatore</strong><span class="flow-load"><span><b>1</b> Caricamento programma</span></span></p>
+        </div>
+        <section class="flow-device" aria-labelledby="device-title">
+          <h3 id="device-title">Dispositivo</h3>
+          <div class="flow-grid">
+            <div class="flow-box flow-files">
+              <strong>File sul dispositivo</strong>
+              <p>Documenti originali e copie salvate</p>
+            </div>
+            <div class="flow-links">
+              <p><span><b>2</b> Apertura documento</span><span class="flow-arrow to-browser" aria-hidden="true"></span></p>
+              <p><span><b>4</b> Salvataggio</span><span class="flow-arrow to-files" aria-hidden="true"></span></p>
+            </div>
+            <div class="flow-box flow-browser">
+              <strong>Browser</strong>
+              <p><b>3</b> Analisi e revisione</p>
+            </div>
+          </div>
+        </section>
+      </figure>
+      <ol class="flow-steps">
+        <li><strong>Caricamento programma.</strong> Il browser scarica lo pseudonimizzatore dal sito e lo esegue nella scheda.</li>
+        <li><strong>Apertura documento.</strong> Si sceglie un file del dispositivo, che il browser legge senza inviarlo al sito.</li>
+        <li><strong>Analisi e revisione.</strong> Lo pseudonimizzatore individua i dati personali e propone le sostituzioni, che si controllano e si correggono nel browser.</li>
+        <li><strong>Salvataggio.</strong> La copia con i dati sostituiti si salva come nuovo file sul dispositivo.</li>
+      </ol>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -65,10 +65,17 @@ software under the GNU Lesser General Public License, version 2.1:
   Pyodide recipes above. Then replace the file in `vendor/pyodide-314.0.7/` and update its
   sha256 in `pyodide-lock.json`. The page loads whichever wheel is there.
 
-## pseudonimizzatore-legale 0.4.0: MIT
+## pypdf 7.1.1 (BSD-3-Clause)
 
-`vendor/pseudonimizzatore_legale-0.4.0-py3-none-any.whl`, built by `build_engine_wheel.sh` from
-tag `v0.4.0` of <https://github.com/giovannipiccioli/pseudonimizzatore-legale>.
+The page loads `vendor/pypdf-7.1.1-py3-none-any.whl` on PDF import.
+
+- Licence: `pypdf-7.1.1.dist-info/licenses/LICENSE` in the wheel.
+- Source: [pypdf 7.1.1 on PyPI](https://pypi.org/project/pypdf/7.1.1/).
+
+## pseudonimizzatore-legale 0.7.0: MIT
+
+`vendor/pseudonimizzatore_legale-0.7.0-py3-none-any.whl`, built by `build_engine_wheel.sh` from
+the local working tree of <https://github.com/giovannipiccioli/pseudonimizzatore-legale>.
 
 - Licence: inside the wheel, `LICENSE` and `THIRD_PARTY_NOTICES.md`. The latter covers the
   bundled list of first names and the list of ISTAT comuni, both CC BY 4.0.

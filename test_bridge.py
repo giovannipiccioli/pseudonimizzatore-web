@@ -5,13 +5,14 @@
 import io
 import json
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from pseudonimizzatore_legale import ResidualFinding, analyze, anonymize, render
+from pseudonimizzatore_legale import Config, ResidualFinding, analyze, anonymize, render
 from bridge import (Refused, docx_bytes, docx_pseudonymized, docx_text, input_findings,
-                    output_to_input, partial_keeps, review)
+                    output_to_input, partial_keeps, pdf_text, review)
 
 TEXT = ("Il sig. Mario Rossi, C.F. RSSMRA80A01H501U, ricorre contro Luigi Bianchi, "
         "residente in Via Roma 1, Bari. Giudice: dott. Carlo Verdi.")
@@ -19,75 +20,223 @@ TEXT = ("Il sig. Mario Rossi, C.F. RSSMRA80A01H501U, ricorre contro Luigi Bianch
 SIGNED = TEXT + "\nIl sig. Rossi insiste. Firmato Tizio Caio."
 
 
-def run(edits=None, text=TEXT):
-    return json.loads(review(text, json.dumps(edits or {})))
+def run(state=None, text=TEXT, action=None):
+    return json.loads(review(text, json.dumps(state), True, json.dumps(action)))
 
 
-def tags(result):
-    return {entity["entity_id"]: entity["aliases"] for entity in result["entities"]
-            if entity["action"] == "redact"}
+def correct(first, kind, **fields):
+    return run(first["state"], first["text"], {"type": kind, **fields})
 
 
-def span(result, alias, nth=0):
-    """The input span of the nth decision on ``alias``."""
-    found = [d for d in result["decisions"] if result["text"][d["start"]:d["end"]] == alias]
-    return [found[nth]["start"], found[nth]["end"]]
+def occurrence(result, kind, alias, nth=0):
+    decisions = [d for d in result["decisions"] if result["text"][d["start"]:d["end"]] == alias]
+    decision = decisions[nth]
+    return correct(result, kind, start=decision["start"], end=decision["end"])
 
 
-def test_no_edits_matches_the_engine():
-    result = run()
-    output, report = anonymize(TEXT)
-    assert result["output"] == output
-    assert result["mapping"] == report.mapping
-    assert result["status"] == report.status
+@pytest.mark.parametrize("package", ["pseudonimizzatore_legale", "pypdf"])
+def test_worker_loads_the_same_wheel_as_the_bridge_tests(package):
+    root = Path(__file__).parent
+    wheel, = root.glob(f"vendor/{package}-*.whl")
+    assert f'"vendor/{wheel.name}"' in (root / "worker.js").read_text()
 
 
-def test_decision_offsets_point_into_the_shown_text():
-    result = run()
-    shown = {result["text"][d["start"]:d["end"]]: d for d in result["decisions"]}
-    assert shown["Mario Rossi"]["tag"] == "Nominativo_1"
+def test_first_pass_and_state_replay_use_the_web_judge_policy():
+    config = Config(keep_roles=("giudice",))
+    for text in (TEXT, SIGNED, "Nato a Roma. Tribunale di Roma.", "Nessun dato."):
+        first = run(text=text)
+        output, report = anonymize(text, config)
+        assert first["output"] == output
+        assert first["state"] == report.state
+        assert run(first["state"], text) == first
+    shown = {TEXT[d["start"]:d["end"]]: d for d in run()["decisions"]}
     assert shown["Carlo Verdi"]["action"] == "keep"
+    assert shown["Mario Rossi"]["tag"] == "Nominativo_1"
 
 
-def test_exclude_keeps_the_other_tags_with_prior_tags():
+def test_global_keep_and_undo_preserve_other_tags():
     first = run()
-    second = run({"exclude": ["Mario Rossi"], "prior_tags": list(first["mapping"].items())})
-    assert "Mario Rossi" in second["output"]
-    assert tags(second)["Nominativo_2"] == ["Luigi Bianchi"]
-    assert "Nominativo_1" not in tags(second)
+    person, other, _ = first["state"]["people"]
+    kept = correct(first, "exclude", id=person["id"])
+    assert "Mario Rossi" in kept["output"]
+    assert kept["state"]["people"][0]["placeholder"] == person["placeholder"]
+    assert other in kept["state"]["people"]
+    assert run(first["state"])["output"] == first["output"]
 
 
-def test_people_and_terms_add_redactions():
-    result = run({"people": [["Carlo Verdi", "Nominativo"]], "terms": [["Bari", "Dato"]]})
-    assert "Carlo Verdi" not in result["output"]
-    assert "Bari" not in result["output"]
-    assert "Dato_1" in result["output"]
+def test_add_person_and_literal_with_propagation_and_rename():
+    first = run(text="Verbale: zefiro. Nota: ZEFIRO. Firma: Ada Quercetani. La Quercetani conferma.")
+    person = correct(first, "person", text="Ada Quercetani", id="web-1")
+    added = correct(person, "term", text="zefiro", id="web-2")
+    renamed = correct(added, "redact", id="web-2", tag="[Progetto]")
+    assert renamed["output"].count("Nominativo_1") == 2
+    assert renamed["output"].count("[Progetto]") == 2
+    assert run(renamed["state"], first["text"])["output"] == renamed["output"]
+    assert run(renamed["state"], "Ada Quercetani firma per zefiro.")["output"] == "Nominativo_1 firma per [Progetto]."
 
 
-def test_keep_spans_placeholders_and_merge_cross_the_bridge():
+def test_explicit_all_matches_can_expand_a_contextual_discovery():
+    first = run(text="Tribunale di Roma. Nato a Roma.")
+    assert first["output"] == "Tribunale di Roma. Nato a Luogo_1."
+    all_copies = correct(first, "term", text="Roma", id="web-1")
+    assert all_copies["output"] == "Tribunale di Luogo_1. Nato a Luogo_1."
+    assert run(all_copies["state"], first["text"])["output"] == all_copies["output"]
+
+
+def test_include_only_one_occurrence_and_replace_it_with_a_keep():
+    text = "📄 codice zefiro; secondo codice zefiro."
+    start = text.rindex("zefiro")
+    result = correct(run(text=text), "include", start=start, end=start + 6)
+    assert result["output"] == "📄 codice zefiro; secondo codice Dato_1."
+    assert run(result["state"], text)["output"] == result["output"]
+    [choice] = result["state"]["occurrences"]
+    assert choice["placeholder"] == "Dato_1" and choice["anchor"]["quote"] == "zefiro"
+    kept = correct(result, "keep", start=start, end=start + 6)
+    assert kept["output"] == text and not kept["unresolved"]
+    assert [r["action"] for r in kept["state"]["occurrences"]] == ["keep"]
+    revised = run(result["state"], "prima versione.")
+    assert revised["unresolved"] == [choice]
+
+
+def test_selective_undo_preserves_allocated_tags_and_skips_dependent_renames():
+    first = run(text="codice alfa e codice beta.")
+    a = correct(first, "term", id="web-1", text="alfa")
+    b = correct(a, "term", id="web-2", text="beta")
+    tag = b["state"]["data"][1]["placeholder"]
+    without_a = correct(first, "term", id="web-2", text="beta", placeholder=tag)
+    assert without_a["output"] == "codice alfa e codice Dato_2."
+    dependent = correct(without_a, "redact", id="web-1", tag="Altro")
+    assert not dependent["applied"] and dependent["state"] == without_a["state"]
+    # Undoing an earlier rename can also restore ownership of the requested label.
+    retry = correct(a, "term", id="web-2", text="beta", placeholder="Dato_1")
+    assert retry["output"] == b["output"]
+
+
+def test_merge_data_and_retarget_linked_occurrence():
+    text = "Contatti: primo@example.test e secondo@example.test. Firma: recapito."
+    first = run(text=text)
+    a, b = first["state"]["data"]
+    first["state"]["occurrences"].append({
+        "action": "redact", "entity_id": a["id"], "anchor": {"quote": "recapito"}})
+    merged = correct(first, "merge", id=a["id"], into=b["id"])
+    assert merged["output"].count(b["placeholder"]) == 3
+    assert merged["state"]["occurrences"][0]["entity_id"] == b["id"]
+    assert run(merged["state"], text)["output"] == merged["output"]
+
+
+def test_kept_judge_can_be_redacted_here_then_everywhere_with_the_same_label():
+    first = run(text="Giudice: dott. Carlo Verdi. Il giudice Carlo Verdi firma.")
+    judge, = first["state"]["people"]
+    last = first["decisions"][-1]
+    local = correct(first, "include", start=last["start"], end=last["end"], tag="Firma_7")
+    assert local["output"] == "Giudice: dott. Carlo Verdi. Il giudice Firma_7 firma."
+    assert local["decisions"][-1]["owner_id"] == judge["id"]
+    both = correct(local, "redact", id=judge["id"], tag="Firma_7")
+    assert both["output"].count("Firma_7") == 2
+    assert both["state"]["occurrences"] == []
+    assert run(both["state"], first["text"])["output"] == both["output"]
+
+
+def test_local_reuse_links_one_mention_and_global_merge_keeps_other_choices():
     first = run(text=SIGNED)
-    result = run({"keep_spans": [span(first, "Rossi")],
-                  "placeholders": [["Mario Rossi", "Attore_1"]],
-                  "merge": [["Luigi Bianchi", "Mario Rossi"]]}, text=SIGNED)
-    assert "Il sig. Rossi insiste" in result["output"]
-    assert result["output"].startswith("Il sig. Attore_1, C.F. CF_1, ricorre contro Attore_1,")
-    assert tags(result)["Attore_1"] == ["Luigi Bianchi", "Mario Rossi"]
+    a, b, _ = first["state"]["people"]
+    surname = next(d for d in first["decisions"] if SIGNED[d["start"]:d["end"]] == "Rossi")
+    local = correct(first, "include", start=surname["start"], end=surname["end"], target=b["id"])
+    assert len(local["state"]["people"]) == 3
+    assert local["output"].count(a["placeholder"]) == 1 and local["output"].count(b["placeholder"]) == 2
+    assert local["state"]["occurrences"][0]["entity_id"] == b["id"]
+    assert next(d for d in local["decisions"] if d["start"] == surname["start"])["owner_id"] == a["id"]
+    [finding] = local["findings"]
+    dismissed = correct(local, "ignore", spans=finding["spans"])
+    merged = correct(dismissed, "merge", id=a["id"], into=b["id"])
+    assert merged["output"].count(b["placeholder"]) == 3
+    assert [c["action"] for c in merged["state"]["occurrences"]] == ["dismiss"]
 
 
-def test_undoing_a_rename_restores_the_number_with_first_tags_as_prior():
-    # The engine reads prior_tags as a dict, so it holds one tag per value: the page
-    # keeps the first, and the rename's Attore_1 must not replace Nominativo_1.
-    first = run()
-    renamed = run({"placeholders": [["Mario Rossi", "Attore_1"]],
-                   "prior_tags": list(first["mapping"].items())})
-    assert renamed["mapping"]["Mario Rossi"] == "Attore_1"
-    undone = run({"prior_tags": list({**renamed["mapping"], **first["mapping"]}.items())})
-    assert undone["mapping"] == first["mapping"]
+def test_finding_can_be_redacted_with_a_custom_label_at_each_scope():
+    text = "Firmato Tizio Caio!\nFirma: Firmato Tizio Caio."
+    first = run(text=text)
+    quote = "Firmato Tizio Caio"
+    local = correct(first, "include", start=0, end=len(quote), tag="Firma_4")
+    assert local["output"].count("Firma_4") == 1
+    for scope in ("term", "person"):
+        both = correct(first, scope, id="web-1", text=quote, tag="Firma_4")
+        assert both["output"].count("Firma_4") == 2
 
 
-def test_unknown_edit_field_is_refused():
-    with pytest.raises(ValueError, match="unknown edit fields"):
-        review(TEXT, json.dumps({"exclud": ["Mario Rossi"]}))
+def test_repeated_identical_lines_refuse_ambiguous_choice():
+    text = "codice zefiro.\ncodice zefiro."
+    with pytest.raises(Refused, match="univoco"):
+        correct(run(text=text), "include", start=7, end=13)
+
+
+def test_merge_then_rename_preserves_aliases_and_local_exceptions():
+    first = run(text=SIGNED)
+    mario, luigi, _ = first["state"]["people"]
+    merged = correct(first, "merge", id=luigi["id"], into=mario["id"])
+    renamed = correct(merged, "redact", id=mario["id"], tag="Attore_1")
+    kept = occurrence(renamed, "keep", "Rossi")
+    assert "Il sig. Rossi insiste" in kept["output"]
+    assert kept["output"].startswith("Il sig. Attore_1, C.F. CF_1, ricorre contro Attore_1,")
+    assert kept["state"]["people"][0]["aliases"] == ["Luigi Bianchi"]
+    entity = next(e for e in kept["entities"] if e["entity_id"] == mario["id"])
+    assert entity["action"] == "mixed"
+    assert run(kept["state"], SIGNED)["output"] == kept["output"]
+
+
+def test_dismissal_is_replayed_by_the_engine_at_one_passage():
+    first = run(text=SIGNED)
+    [finding] = first["findings"]
+    reviewed = correct(first, "ignore", spans=finding["spans"])
+    assert not reviewed["findings"]
+    assert reviewed["output"] == first["output"]
+    [dismiss] = reviewed["state"]["occurrences"]
+    assert dismiss["action"] == "dismiss" and dismiss["anchor"]["quote"] == finding["text"]
+    assert not run(reviewed["state"], SIGNED)["findings"]
+
+
+@pytest.mark.parametrize("treatment", ["redact", "dismiss"])
+def test_bulk_finding_treatment_keeps_existing_review_choices_and_replays(treatment):
+    text = SIGNED + "\nTestimone Aldo Mancini. Firma Neri Celeste."
+    first = run(text=text)
+    first = correct(first, "exclude", id=first["state"]["people"][0]["id"])
+    assert len(first["findings"]) == 2
+    groups = [f["spans"] if treatment == "dismiss" else [[f["start"], f["end"]]]
+              for f in first["findings"]]
+    bulk = correct(first, "bulk_findings", treatment=treatment, findings=groups)
+    assert bulk["bulk"] == {"count": 2, "skipped": 0}
+    assert bulk["applied"] and not bulk["findings"] and not bulk["unresolved"]
+    assert bulk["state"]["people"] == first["state"]["people"]
+    if treatment == "redact":
+        assert "Dato_1" in bulk["output"] and "Dato_2" in bulk["output"]
+        assert "Tizio Caio" not in bulk["output"] and "Neri Celeste" not in bulk["output"]
+    else:
+        assert bulk["output"] == first["output"]
+    assert run(bulk["state"], text)["output"] == bulk["output"]
+    assert not run(bulk["state"], text)["findings"]
+    assert run(first["state"], text)["findings"] == first["findings"]
+
+
+def test_bulk_redaction_leaves_a_finding_that_overlaps_an_existing_decision():
+    first = run(text=SIGNED)
+    person = next(d for d in first["decisions"] if d["kind"] == "PERSON")
+    finding, = first["findings"]
+    bulk = correct(first, "bulk_findings", treatment="redact", findings=[
+        [[person["start"], person["end"] + 1]], [[finding["start"], finding["end"]]],
+    ])
+    assert bulk["bulk"] == {"count": 1, "skipped": 1}
+    assert bulk["decisions"][0] == person
+    assert len(bulk["state"]["occurrences"]) == 1 and not bulk["unresolved"]
+
+
+def test_bulk_dismissal_leaves_an_ambiguous_finding_in_the_list():
+    text = "codice zefiro.\ncodice zefiro.\nFirmato Tizio Caio."
+    first = run(text=text)
+    finding, = first["findings"]
+    bulk = correct(first, "bulk_findings", treatment="dismiss",
+                   findings=[[[7, 13]], finding["spans"]])
+    assert bulk["bulk"] == {"count": 1, "skipped": 1}
+    assert [c["anchor"]["quote"] for c in bulk["state"]["occurrences"]] == [finding["text"]]
 
 
 # --- output offsets back to input offsets ---------------------------------------------
@@ -111,7 +260,7 @@ def test_output_to_input_through_several_redactions_and_a_keep():
 
 
 def test_findings_are_mapped_into_the_shown_text():
-    analysis = analyze(SIGNED)
+    analysis = analyze(SIGNED, Config(keep_roles=("giudice",)))
     output, report = render(analysis)
     result = run(text=SIGNED)
     assert [f["text"] for f in result["findings"]] == [r.text for r in report.residuals]
@@ -128,6 +277,7 @@ def test_overlapping_findings_are_merged():
     text = "Il teste Mario Rossi conferma."
     merged = input_findings(text, [], [finding(9, 20, "Mario Rossi"), finding(15, 20, "Rossi")])
     assert [(f["start"], f["end"], f["text"]) for f in merged] == [(9, 20, "Mario Rossi")]
+    assert merged[0]["spans"] == [(9, 20), (15, 20)]
     merged = input_findings(text, [], [finding(12, 20, "io Rossi"), finding(9, 14, "Mario")])
     assert [(f["start"], f["end"], f["text"]) for f in merged] == [(9, 20, "Mario Rossi")]
 
@@ -142,24 +292,76 @@ def test_a_finding_about_the_whole_document_has_no_span():
 
 def test_keeping_one_occurrence_of_a_redacted_name_is_a_partial_keep():
     first = run(text=SIGNED)
-    result = run({"keep_spans": [span(first, "Rossi")]}, text=SIGNED)
+    result = occurrence(first, "keep", "Rossi")
     assert [(p["text"], p["tags"]) for p in result["partial_keeps"]] == [("Rossi", ["Nominativo_1"])]
-    assert result["text"][slice(*span(first, "Rossi"))] == "Rossi"
 
 
 def test_keeping_the_only_occurrence_is_not_a_partial_keep():
     first = run()
-    result = run({"keep_spans": [span(first, "RSSMRA80A01H501U")]})
+    result = occurrence(first, "keep", "RSSMRA80A01H501U")
     assert "RSSMRA80A01H501U" in result["output"]
     assert result["partial_keeps"] == []
 
 
 def test_partial_keeps_ignore_the_engine_keeps():
-    judge = SimpleNamespace(start=0, end=11, text="Carlo Verdi", kind="JUDGE", action="keep",
+    judge = SimpleNamespace(start=0, end=11, text="Carlo Verdi", kind="JUDGE", source="judge", action="keep",
                             replacement=None)
     party = SimpleNamespace(start=20, end=31, text="Mario Verdi", kind="PERSON",
                             action="redact", replacement="Nominativo_1")
     assert partial_keeps([judge, party]) == []
+
+
+# --- PDF input -------------------------------------------------------------------------
+
+def pdf(*page_texts, password=None):
+    """Make a small PDF with a text stream on each nonblank test page."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    for text in page_texts:
+        page = writer.add_blank_page(width=300, height=400)
+        if text:
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject({
+                    NameObject("/F1"): DictionaryObject({
+                        NameObject("/Type"): NameObject("/Font"),
+                        NameObject("/Subtype"): NameObject("/Type1"),
+                        NameObject("/BaseFont"): NameObject("/Helvetica"),
+                        NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+                    }),
+                }),
+            })
+            contents = DecodedStreamObject()
+            contents.set_data(b"BT /F1 12 Tf 10 380 Td (" + text.encode("cp1252") + b") Tj ET")
+            page.replace_contents(contents)
+    if password:
+        writer.encrypt(password)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_pdf_preserves_page_order_and_feeds_the_review_engine():
+    result = json.loads(pdf_text(memoryview(pdf(
+        "Il sig. Mario Rossi ricorre.", "", "L’udienza è rinviata."))))
+    assert result == {
+        "text": "Il sig. Mario Rossi ricorre.\n\nL’udienza è rinviata.",
+        "empty_pages": [2],
+    }
+    reviewed = json.loads(review(result["text"]))
+    assert "Nominativo_1" in reviewed["output"]
+    assert "Mario Rossi" not in reviewed["output"]
+
+
+@pytest.mark.parametrize(("make_pdf", "message"), [
+    (lambda: pdf("", ""), "non contiene testo estraibile"),
+    (lambda: pdf("Testo", password="test"), "PDF è protetto"),
+    (lambda: b"%PDF-1.7\n", "Impossibile leggere il PDF"),
+], ids=["no text layer", "encrypted", "unreadable"])
+def test_pdf_refuses_unusable_documents(make_pdf, message):
+    with pytest.raises(Refused, match=message):
+        pdf_text(make_pdf())
 
 
 # --- .docx in --------------------------------------------------------------------------
@@ -225,7 +427,7 @@ def test_docx_text_keeps_tabs_and_breaks_and_reads_a_text_box_once():
     '<w:del w:id="1" w:author="X"><w:r><w:delText>vecchio</w:delText></w:r></w:del>',
 ])
 def test_docx_text_refuses_tracked_changes(revision):
-    with pytest.raises(Refused, match="accetta o rifiuta"):
+    with pytest.raises(Refused, match="accettare o rifiutare"):
         docx_text(docx(f"<w:p>{revision}</w:p>"))
 
 
@@ -306,6 +508,21 @@ def test_formatted_export_has_the_text_of_the_plain_one():
     result, formatted = pseudonymized(data)
     assert "Mario Rossi" not in result["output"] and "Luigi Bianchi" not in result["output"]
     assert docx_text(formatted) == result["output"]
+
+
+def test_formatted_docx_uses_the_reviewed_label_and_occurrence():
+    data = docx(p("📄  Il sig. Mario Rossi firma.") + p("Il sig. Rossi conferma."))
+    raw = docx_text(data)
+    first = json.loads(review(raw, "null", False))
+    person, = first["state"]["people"]
+    renamed = json.loads(review(raw, json.dumps(first["state"]), False,
+                                json.dumps({"type": "redact", "id": person["id"], "tag": "Parte_7"})))
+    surname = next(d for d in renamed["decisions"] if raw[d["start"]:d["end"]] == "Rossi")
+    kept = json.loads(review(raw, json.dumps(renamed["state"]), False, json.dumps({
+        "type": "keep", "start": surname["start"], "end": surname["end"]})))
+    spans = [[d["start"], d["end"], d["tag"]] for d in kept["decisions"] if d["action"] == "redact"]
+    rendered = docx_text(docx_pseudonymized(data, json.dumps(spans)))
+    assert rendered == kept["output"] == "📄  Il sig. Parte_7 firma.\nIl sig. Rossi conferma."
 
 
 def test_a_tag_takes_the_formatting_of_the_run_where_its_text_starts():

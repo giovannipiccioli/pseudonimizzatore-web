@@ -2,52 +2,54 @@
 // the document never leaves the device and a long one never freezes the page. Python
 // is reached through bridge.py only:
 //
-//   review(raw, editsJson, sanitize) -> resultJson      docx_text(bytes) -> text
+//   review(raw, stateJson, sanitize, actionJson) -> resultJson      docx_text(bytes) -> text
+//   pdf_text(bytes) -> resultJson
 //   docx_pseudonymized(bytes, redactionsJson) -> bytes  docx_bytes(text) -> bytes
 //
-// The reviewer's changes are a list of actions. Every change analyses the document
-// again with the whole list, and undo or redo swaps one list for another.
+// Each correction starts from the preceding report.state. Undo/redo restore saved
+// states. Removing an older correction replays only the later commands on its predecessor.
 
-const PERSON = "Nominativo";   // role of a person the reviewer adds
-const OTHER = "Dato";          // label of any other text the reviewer adds
-const TAG = /^[A-Za-zÀ-ÖØ-öø-ÿ]+_\d+$/;   // what verification reads as a tag, not a name
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const REASONS = {
   "verification:structured": "dato identificativo rimasto",
   "verification:private-role": "nome dopo il ruolo di una parte",
   "verification:name-shape": "sembra un nome",
+  "verification:title-name": "nome dopo un titolo",
   "verification:alias": "variante di un nome oscurato",
   "verification:coverage": "documento lungo in cui non è stato oscurato nulla",
 };
 
 const $ = (id) => document.getElementById(id);
-const fold = (text) => text.replace(/\s+/g, " ").trim().toLowerCase();
 const quote = (texts) => texts.map((text) => `«${text}»`).join(", ");
 const reason = (finding) => REASONS[finding.source] ?? finding.reason;
 
-// Each action type: [Edits field or null, its value, key of the one action of that type
-// it replaces, line in "Le tue modifiche"].
-const ACTIONS = {
-  person: (a) => ["people", [a.text, PERSON], fold(a.text), `Oscurato come persona: «${a.text}»`],
-  term: (a) => ["terms", [a.text, OTHER], fold(a.text), `Oscurato come dato: «${a.text}»`],
-  keep: (a) => ["keep_spans", [a.start, a.end], `${a.start}:${a.end}`, `In chiaro qui: «${a.text}»`],
-  exclude: (a) => ["exclude", a.value, fold(a.value), `In chiaro ovunque: ${quote(a.aliases)}`],
-  rename: (a) => ["placeholders", [a.value, a.tag], fold(a.value), `${a.from} rinominato ${a.tag}`],
-  merge: (a) => ["merge", [a.value, a.into], fold(a.value), `${a.from} unito a ${a.to}`],
-  ignore: (a) => [null, null, `${a.start}:${a.end}`, `Ignorato: «${a.text}»`],
+const describe = {
+  person: (a) => `Oscurato come persona: «${a.text}»`,
+  term: (a) => `Oscurato come dato: «${a.text}»`,
+  include: (a) => `Oscurato qui: «${a.text}»`,
+  keep: (a) => `In chiaro qui: «${a.text}»`,
+  exclude: (a) => `In chiaro ovunque: ${quote(a.aliases)}`,
+  redact: (a) => `Oscurato in tutta l’entità: «${a.text}»${a.tag ? " → " + a.tag : ""}`,
+  merge: (a) => `${a.from} unito a ${a.to}`,
+  bulk_findings: (a) => a.treatment === "dismiss" ? "Segnalazioni ignorate in blocco" : "Segnalazioni oscurate in blocco",
+  ignore: (a) => `Ignorato: «${a.text}»`,
 };
 
-let doc = null;        // { name, raw }
-let actions = [];      // the reviewer's changes, oldest first
-let past = [];         // earlier lists of actions, for undo
-let future = [];       // undone lists, for redo
-let priorTags = {};    // the first tag each value was given, so tags keep their numbers
+let doc = null;         // { name, raw, docx, pdfNote }
+let initialState = null;
+let actions = [];       // { command, state } after each accepted correction
+let past = [];
+let future = [];
+let nextEntity = 0;     // unique even when a branch of history is undone
 let result = null;     // the last analysis
 let items = [];        // findings the reviewer has not answered yet
 let cursor = null;     // start of the item n/p last moved to
 let latest = 0;        // the last analysis asked for: older answers are dropped
 let saving = null;     // the format to save once the reviewer confirms
-let retagging = null;  // entity currently open in the change-placeholder dialog
+let editing = null;    // spans currently shown in the review popup
+let draft = null;      // imported file and the text shown before analysis
+let menuMode = null;
+let draggingSelection = false;
 
 function status(message, state = "ready") {
   $("status").textContent = message;
@@ -56,7 +58,10 @@ function status(message, state = "ready") {
 
 // --- the engine, behind the worker -----------------------------------------------------
 
-const worker = new Worker(new URL("worker.js", import.meta.url), { type: "module" });
+// Use the same release URL for the page, worker and Python bridge.
+const workerURL = new URL("worker.js", import.meta.url);
+workerURL.search = new URL(import.meta.url).search;
+const worker = new Worker(workerURL, { type: "module" });
 const pending = new Map();
 let calls = 0;
 worker.onmessage = ({ data }) => {
@@ -75,12 +80,9 @@ function call(name, ...args) {
 }
 
 async function start() {
-  const begin = performance.now();
   await call("ready");
-  $("open").disabled = false;
-  $("example").disabled = false;
-  status(`Motore pronto in ${((performance.now() - begin) / 1000).toFixed(1)} s. `
-         + "Apri un file .txt, .md o .docx.");
+  enableOpening(true);
+  status("");
 }
 
 // --- opening ---------------------------------------------------------------------------
@@ -97,27 +99,51 @@ async function readText(file) {
 
 async function openFile(file) {
   const extension = file.name.split(".").pop().toLowerCase();
-  let raw;
-  let docx = null;     // a .docx's own bytes, to write the tags back into
-  try {
-    if (extension === "docx") {
-      status("Lettura del documento Word…", "busy");
-      docx = await file.arrayBuffer();
-      raw = await call("docx_text", docx.slice(0));
-    } else if (extension === "txt" || extension === "md") {
-      raw = await readText(file);
-    } else {
-      return status("Formato non supportato: apri un file .txt, .md o .docx.", "error");
+  let raw, docx = null, pdfNote = "";
+  if (extension === "docx") {
+    status("Lettura del documento Word…", "busy");
+    docx = await file.arrayBuffer();
+    raw = await call("docx_text", docx.slice(0));
+  } else if (extension === "pdf") {
+    status("Estrazione del testo dal PDF…", "busy");
+    const { text, empty_pages } = JSON.parse(await call("pdf_text", await file.arrayBuffer()));
+    raw = text;
+    if (empty_pages.length === 1) {
+      pdfNote = `Nessun testo estraibile dalla pagina ${empty_pages[0]} del PDF.`;
+    } else if (empty_pages.length > 1) {
+      pdfNote = `Nessun testo estraibile dalle pagine ${empty_pages.join(", ")} del PDF.`;
     }
-  } catch (error) {
-    return status(error.refused ? error.message : `Impossibile leggere ${file.name}: ${error.message}`, "error");
+  } else if (extension === "txt" || extension === "md") {
+    raw = await readText(file);
+  } else {
+    return status("Formato non supportato. Sono accettati file .txt, .md, .docx e .pdf.", "error");
   }
   if (!raw.trim()) return status(`${file.name} non contiene testo.`, "error");
-  doc = { name: file.name, raw, docx };
+  $("source-text").value = raw;
+  draft = { name: file.name, raw, docx, pdfNote, display: $("source-text").value };
+  $("document-title").textContent = file.name;
+  status("Documento caricato. Selezionare Analizza testo per iniziare la revisione.");
+}
+
+function enableOpening(enabled) {
+  $("open").disabled = $("example").disabled = !enabled;
+  $("source-text").readOnly = !enabled;
+  updateComposer();
+}
+
+function showReview(visible) {
+  $("composer").hidden = $("review-empty").hidden = visible;
+  for (const id of ["document", "document-tools", "review-sections", "exports", "legend"]) $(id).hidden = !visible;
+}
+
+async function openText(name, raw, { docx = null, pdfNote = "" } = {}) {
+  if (!raw.trim()) return status(`${name} non contiene testo.`, "error");
+  doc = { name, raw, docx, pdfNote };
   actions = [];
   past = [];
   future = [];
-  priorTags = {};
+  initialState = null;
+  result = null;
   cursor = null;
   await analyse();
 }
@@ -125,103 +151,108 @@ async function openFile(file) {
 // --- the review loop -------------------------------------------------------------------
 
 function change(action) {
-  const key = ACTIONS[action.type](action)[2];
-  const same = (other) => other.type === action.type && ACTIONS[other.type](other)[2] === key;
-  commit([...actions.filter((other) => !same(other)), action]);
+  if (!reviewReady()) return;
+  if (action.type === "person" || action.type === "term") action.id = `web-${++nextEntity}`;
+  analyse(actions, [action], remember);
 }
 
-function commit(next) {
+function remember() {
   past.push(actions);
   future = [];
-  actions = next;
-  analyse();
+}
+
+function removeAction(index) {
+  if (!reviewReady()) return;
+  analyse(actions.slice(0, index), actions.slice(index + 1).map((step) => step.command), remember);
 }
 
 function undo() {
-  if (!past.length) return;
-  future.push(actions);
-  actions = past.pop();
-  analyse();
+  if (!reviewReady() || !past.length) return;
+  analyse(past.at(-1), [], () => { future.push(actions); past.pop(); });
 }
 
 function redo() {
-  if (!future.length) return;
-  past.push(actions);
-  actions = future.pop();
-  analyse();
+  if (!reviewReady() || !future.length) return;
+  analyse(future.at(-1), [], () => { past.push(actions); future.pop(); });
 }
 
-async function analyse() {
+async function analyse(prefix = [], commands = [], onSuccess = () => {}) {
   const id = ++latest;
   hideMenu();
+  $("selection-actions").disabled = true;
   $("export-txt").disabled = $("export-docx").disabled = true;
   $("workspace").setAttribute("aria-busy", "true");
   status("Analisi in corso…", "busy");
-  const edits = { people: [], terms: [], exclude: [], keep_spans: [], merge: [], placeholders: [],
-                  prior_tags: Object.entries(priorTags) };
-  for (const action of actions) {
-    const [field, value] = ACTIONS[action.type](action);
-    if (field) edits[field].push(value);
-  }
-  const begin = performance.now();
+  const next = [...prefix];
+  let state = prefix.at(-1)?.state ?? initialState;
   let answer;
   try {
-    // A .docx's text is analysed as it is, so offsets point into its runs.
-    answer = JSON.parse(await call("review", doc.raw, JSON.stringify(edits), !doc.docx));
+    // Only selective undo needs more than one pass. Keep the last successful
+    // review intact if the engine refuses a selection or processing fails.
+    for (const command of commands.length ? commands : [null]) {
+      answer = JSON.parse(await call("review", doc.raw, JSON.stringify(state), !doc.docx, JSON.stringify(command)));
+      if (id !== latest) return;
+      state = answer.state;
+      if (answer.applied) {
+        // Selective undo may remove an earlier allocation. Keep a new item's
+        // original label, even if a lower number becomes available on replay.
+        let added;
+        if (command.type === "include") added = state.occurrences.at(-1);
+        if (command.type === "term") added = state.data.find((row) => row.id === command.id);
+        if (command.type === "person") added = state.people.find((row) => row.id === command.id);
+        next.push({ command: { ...command, placeholder: added?.placeholder }, state });
+      }
+    }
   } catch (error) {
     if (id === latest) {
       $("workspace").setAttribute("aria-busy", "false");
-      status(`Errore nell'analisi: ${error.message}`, "error");
+      $("export-txt").disabled = $("export-docx").disabled = !result;
+      status(error.refused ? error.message : `Errore nell'analisi: ${error.message}`, "error");
     }
     return;
   }
-  if (id !== latest) return;
+  onSuccess();
+  actions = next;
+  initialState ??= answer.state;
   result = answer;
-  // The engine reads one tag per value. Keeping the first means a renamed entity gets
-  // its number back when the rename is undone.
-  for (const [value, tag] of Object.entries(result.mapping)) priorTags[value] ??= tag;
-  items = reviewItems();
+  // An explicit local keep already answers the question for this passage.
+  // The panel still warns if the same name is redacted elsewhere.
+  const keptHere = result.decisions.filter((d) => d.action === "keep" && d.source === "user:occurrence");
+  items = result.findings.filter((f) => f.text && !keptHere.some((d) => d.start <= f.start && f.end <= d.end));
   showDocument();
   showPanel();
-  $("empty-state").hidden = $("review-empty").hidden = true;
-  $("document").hidden = $("document-tools").hidden = $("review-sections").hidden = false;
+  showReview(true);
   $("document-title").textContent = doc.name;
-  $("document-format").textContent = doc.name.split(".").pop().toUpperCase();
+  $("document-format").textContent = (doc.name.match(/\.([^.]+)$/)?.[1] ?? "txt").toUpperCase();
   $("document-format").hidden = false;
   $("undo").disabled = !past.length;
   $("redo").disabled = !future.length;
-  $("add-person").disabled = $("add-other").disabled = !selection();
   $("workspace").setAttribute("aria-busy", "false");
   showCurrent();
   $("export-txt").disabled = $("export-docx").disabled = false;
-  status(`${doc.name}: analizzato in ${Math.round(performance.now() - begin)} ms.`);
-}
-
-// The findings the reviewer has not answered: not ignored, not inside one of their
-// keeps, not a spelling of an entity they chose to leave in clear.
-function reviewItems() {
-  const ignored = new Set(actions.filter((a) => a.type === "ignore").map((a) => `${a.start}:${a.end}`));
-  const excluded = new Set(actions.filter((a) => a.type === "exclude").flatMap((a) => a.aliases.map(fold)));
-  const keeps = result.decisions.filter((d) => d.kind === "USER");
-  return result.findings.filter((f) => f.text && !ignored.has(`${f.start}:${f.end}`)
-    && !excluded.has(fold(f.text)) && !keeps.some((k) => k.start <= f.start && f.end <= k.end));
+  if (answer.bulk) {
+    const { count, skipped } = answer.bulk;
+    const processed = count === 1 ? "1 segnalazione trattata" : `${count} segnalazioni trattate`;
+    const remaining = skipped ? ` · ${skipped} da trattare singolarmente` : "";
+    status(`${processed}${remaining}.`);
+  } else {
+    status("Analisi completata.");
+  }
 }
 
 function warnings() {
   const conflict = /^conflicting judicial\/private-role evidence for (['"])(.*)\1$/;
   return [
+    ...(doc.pdfNote ? [doc.pdfNote] : []),
     ...result.partial_keeps.map((keep) => `«${keep.text}» è in chiaro in un punto ma oscurato `
       + `altrove come ${keep.tags.join(", ")}: chi legge può ricollegarli.`),
     ...result.findings.filter((f) => !f.text).map((f) => `${reason(f)}.`),
-    ...result.warnings.map((warning) => warning.replace(
-      conflict, "«$2» compare sia come giudice sia come parte: controlla come è stato trattato.")),
+    ...result.unresolved.map((choice) =>
+      `Non è stato possibile applicare la scelta a «${choice.anchor.quote}». È necessaria la verifica del passo.`),
+    ...result.warnings.filter((w) => w !== "some occurrence decisions could not be applied uniquely").map((warning) => warning.replace(
+      conflict, "«$2» compare sia come giudice sia come parte: verificare il trattamento applicato.")),
   ];
 }
-
-// The text an edit names an entity by: its value in the mapping.
-const valueOf = (tag) => Object.keys(result.mapping).find((value) => result.mapping[value] === tag);
-// A surname shared by several people has a neutral tag of its own, which no edit names.
-const editable = (entity) => entity && !entity.sources.every((source) => source === "alias:ambiguous");
 
 function accept(item) {
   cursor = item.start;
@@ -230,56 +261,130 @@ function accept(item) {
 
 function dismiss(item) {
   cursor = item.start;
-  change({ type: "ignore", start: item.start, end: item.end, text: item.text });
+  change({ type: "ignore", spans: item.spans, text: item.text });
 }
 
-function keepHere(decision) {
-  change({ type: "keep", start: decision.start, end: decision.end,
-           text: result.text.slice(decision.start, decision.end) });
-}
-
-function keepEverywhere(entity) {
-  change({ type: "exclude", value: valueOf(entity.entity_id), aliases: entity.aliases });
-}
-
-// A page dialog, rather than window.prompt(), works in embedded browsers too.  A typed
-// tag either renames this entity or merges it into the matching redacted entity.
-function retag(entity) {
-  const from = entity.entity_id;
-  retagging = entity;
-  $("retag-title").textContent = `Cambia ${from}`;
-  $("retag-input").value = from;
-  $("retag-error").hidden = true;
-  $("retag").showModal();
-  $("retag-input").focus();
-  $("retag-input").select();
-}
-
-function applyRetag(event) {
-  event.preventDefault();
-  const entity = retagging;
-  if (!entity) return;
-  const from = entity.entity_id;
-  const tag = $("retag-input").value.trim();
-  const showError = (message) => {
-    $("retag-error").textContent = message;
-    $("retag-error").hidden = false;
-    $("retag-input").focus();
-  };
-  if (!tag || tag === from) return $("retag").close();
-  const other = result.entities.find((e) => e.action === "redact" && e.entity_id === tag);
-  if (other && editable(other)) {
-    $("retag").close();
-    change({ type: "merge", value: valueOf(from), into: valueOf(tag), from, to: tag });
-  } else if (other) {
-    showError(`${tag} è un cognome condiviso da più persone: non si può unire.`);
-  } else if (!TAG.test(tag)) {
-    showError("Segnaposto non valido: usa lettere, un trattino basso e un numero, es. Attore_1.");
-  } else {
-    $("retag").close();
-    change({ type: "rename", value: valueOf(from), from, tag });
+// The reader and the sidebar edit the same spans. Only a grouped sidebar row
+// needs a passage picker when a reviewer switches from the entity to one mention.
+function openChoices(trigger, spans, { finding = false, grouped = false } = {}) {
+  if (!reviewReady()) return;
+  const first = spans[0];
+  const rows = [...result.state.people, ...result.state.data];
+  const owner = rows.find((r) => r.id === first.owner_id);
+  editing = { trigger, spans, finding, owner, rows, labelEdited: false };
+  $("choice-status").textContent = finding ? "Da verificare" : first.action === "keep" ? "In chiaro" : "Oscurato";
+  $("choice-title").textContent = finding ? first.text : textOf(first);
+  $("treatment").replaceChildren(new Option("Oscura", "redact"),
+    finding ? new Option("Ignora segnalazione", "dismiss")
+      : new Option("Lascia in chiaro", "keep"));
+  $("treatment").value = finding ? "redact" : first.action;
+  const scope = $("scope");
+  scope.replaceChildren(new Option("Solo questa occorrenza", "local"));
+  if (owner) scope.add(new Option(`Tutta l’entità · ${owner.name ?? owner.value}`, "entity"));
+  if (finding) {
+    scope.add(new Option("Tutte le occorrenze dello stesso testo", "term"));
+    scope.add(new Option("Persona e varianti del nome", "person"));
   }
+  scope.value = grouped && owner ? "entity" : "local";
+  $("passage").replaceChildren();
+  if (spans.length > 1) {
+    const chars = Array.from(result.text);
+    spans.forEach((span, index) => $("passage").add(new Option(
+      `${index + 1}. ${chars.slice(Math.max(0, span.start - 20), span.end + 20).join("").trim()}`, index)));
+  }
+  hideMenu();
+  $("choices").showModal();
+  refreshChoice();
+  $("treatment").focus({ preventScroll: true });
 }
+
+const choiceSpan = () => editing.spans[$("passage").selectedIndex] ?? editing.spans[0];
+const textOf = (span) => Array.from(result.text).slice(span.start, span.end).join("");
+
+function refreshChoice() {
+  const local = $("scope").value === "local";
+  const span = choiceSpan();
+  $("scope").disabled = $("treatment").value === "dismiss" || $("scope").options.length === 1;
+  $("passage-field").hidden = !local || editing.spans.length < 2;
+  if (!editing.finding) $("choice-title").textContent = local ? textOf(span) : (editing.owner?.name ?? editing.owner?.value ?? textOf(span));
+  $("label-field").hidden = $("treatment").value !== "redact";
+  if (!editing.labelEdited) $("choice-label").value = (local ? span.tag : editing.owner?.placeholder) ?? "";
+  explainChoice();
+}
+
+function explainChoice() {
+  const { owner, rows, finding, trigger } = editing;
+  const tag = $("choice-label").value.trim();
+  const target = tag && rows.find((r) => r.placeholder === tag);
+  const local = $("scope").value === "local";
+  let message = "", error = "", submit = "Applica";
+  if ($("treatment").value === "redact" && tag) {
+    if (target && local && target.id !== owner?.id) {
+      message = `Solo questo passo userà il segnaposto di «${target.name ?? target.value}».`;
+      submit = "Collega questa occorrenza";
+    } else if (target && !local && target.id !== owner?.id) {
+      if (finding || !owner || ("name" in owner) !== ("name" in target)) {
+        error = "Questo segnaposto appartiene a un’altra entità. È possibile scegliere un segnaposto libero o collegare solo questa occorrenza.";
+      } else {
+        message = `«${owner.name ?? owner.value}» e «${target.name ?? target.value}» formeranno una sola entità.`;
+        submit = "Unisci le due entità";
+      }
+    } else if (!target && result.state.occurrences.some((c) => c.placeholder === tag)
+               && !(local && choiceSpan().tag === tag)
+               && !(!local && owner && result.decisions.some((d) => d.tag === tag && d.owner_id === owner.id))) {
+      error = "Questo segnaposto è riservato a un’altra occorrenza.";
+    }
+  }
+  $("choice-help").textContent = message;
+  $("choice-help").hidden = !message;
+  $("choice-error").textContent = error;
+  $("choice-error").hidden = !error;
+  $("choice-apply").textContent = submit;
+  $("choice-apply").disabled = Boolean(error);
+
+  const dialog = $("choices");
+  const box = trigger.getBoundingClientRect();
+  dialog.style.left = `${Math.max(8, Math.min(box.left, innerWidth - dialog.offsetWidth - 8))}px`;
+  const top = box.bottom + dialog.offsetHeight + 14 <= innerHeight ? box.bottom + 6 : box.top - dialog.offsetHeight - 6;
+  dialog.style.top = `${Math.max(8, Math.min(top, innerHeight - dialog.offsetHeight - 8))}px`;
+}
+
+function applyChoice(event) {
+  event.preventDefault();
+  if (!editing || $("choice-apply").disabled) return;
+  const { owner, rows, finding } = editing;
+  const treatment = $("treatment").value;
+  const span = choiceSpan();
+  const text = finding ? span.text : textOf(span);
+  const scope = $("scope").value;
+  const tag = $("choice-label").value.trim();
+  const target = (tag && rows.find((r) => r.placeholder === tag)) || (!tag && owner);
+  const passage = { start: span.start, end: span.end, text };
+  $("choices").close();
+  if (treatment === "dismiss") return dismiss(span);
+  if (scope === "local") {
+    if (treatment === "keep") return change({ type: "keep", ...passage });
+    return change({ type: "include", ...passage, target: target?.id, tag: target ? undefined : tag });
+  }
+  if (scope === "person" || scope === "term") return change({ type: scope, text, tag });
+  if (treatment === "keep") return change({ type: "exclude", id: owner.id, aliases: [owner.name ?? owner.value] });
+  if (target && target.id !== owner.id) {
+    return change({ type: "merge", id: owner.id, into: target.id, from: owner.name ?? owner.value, to: tag });
+  }
+  change({ type: "redact", id: owner.id, text: owner.name ?? owner.value, tag });
+}
+
+$("choice-form").onsubmit = applyChoice;
+$("choice-cancel").onclick = () => $("choices").close();
+$("choices").onclose = () => { editing = null; };
+$("choices").onclick = (event) => {
+  if (event.target !== $("choices")) return;
+  const r = $("choices").getBoundingClientRect();
+  if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) $("choices").close();
+};
+$("scope").onchange = $("treatment").onchange = refreshChoice;
+$("passage").onchange = () => { editing.labelEdited = false; refreshChoice(); };
+$("choice-label").oninput = () => { editing.labelEdited = true; explainChoice(); };
 
 // --- the text --------------------------------------------------------------------------
 
@@ -288,25 +393,26 @@ function showDocument() {
     ...result.decisions.map((decision, index) => ({ ...decision, mark: decision.action, index })),
     ...items.map((item, index) => ({ ...item, mark: "verify", index })),
   ].sort((a, b) => a.start - b.start || (a.mark === "verify") - (b.mark === "verify"));
+  const text = Array.from(result.text); // Python spans count code points, not UTF-16 units.
   const parts = document.createDocumentFragment();
   let at = 0;
   for (const span of spans) {
     if (span.start < at) continue;       // a finding inside a highlight is listed only
-    parts.append(result.text.slice(at, span.start));
+    parts.append(text.slice(at, span.start).join(""));
     const mark = document.createElement("mark");
     mark.className = span.mark;
-    mark.textContent = result.text.slice(span.start, span.end);
+    mark.textContent = text.slice(span.start, span.end).join("");
     mark.dataset[span.mark === "verify" ? "item" : "decision"] = span.index;
     if (span.tag) mark.dataset.tag = span.tag;
-    if (span.mark !== "keep") {
-      mark.tabIndex = 0;
-      mark.setAttribute("role", "button");
-      mark.setAttribute("aria-label", `${mark.textContent}: ${span.tag || "da verificare"}. Mostra azioni`);
-    }
+    mark.tabIndex = 0;
+    mark.setAttribute("role", "button");
+    mark.setAttribute("aria-haspopup", "dialog");
+    const treatment = span.tag || (span.mark === "keep" ? "in chiaro" : "da verificare");
+    mark.setAttribute("aria-label", `${mark.textContent}: ${treatment}. Mostra azioni`);
     parts.append(mark);
     at = span.end;
   }
-  parts.append(result.text.slice(at));
+  parts.append(text.slice(at).join(""));
   $("document").replaceChildren(parts);
 }
 
@@ -319,48 +425,51 @@ function button(label, action, disabled = false) {
   return element;
 }
 
-function showMenu(mark, title, choices) {
+function showMenu(box, title, choices, { mode = "mark", focus = true } = {}) {
+  const menu = $("menu");
   const heading = document.createElement("p");
+  heading.id = "menu-title";
   heading.textContent = title;
-  $("menu").replaceChildren(heading, ...choices.map(([label, action]) =>
+  menu.replaceChildren(heading, ...choices.map(([label, action]) =>
     button(label, () => { hideMenu(); action(); }, !action)));
-  const box = mark.getBoundingClientRect();
-  $("menu").style.left = `${Math.max(8, Math.min(box.left, innerWidth - 300))}px`;
-  $("menu").style.top = `${box.bottom + 4}px`;
-  $("menu").hidden = false;
-  // Keep the menu on screen even for a highlight near the bottom of the reader.
-  $("menu").style.top = `${Math.max(8, Math.min(box.bottom + 4, innerHeight - $("menu").offsetHeight - 8))}px`;
-  $("menu").querySelector("button:enabled")?.focus();
+  menuMode = mode;
+  menu.hidden = false;
+  const below = box.bottom + 6;
+  const above = box.top - menu.offsetHeight - 6;
+  menu.style.left = `${Math.max(8, Math.min(box.left, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, below + menu.offsetHeight <= innerHeight - 8 ? below : above)}px`;
+  if (focus) menu.querySelector("button:enabled")?.focus({ preventScroll: true });
 }
 
 function hideMenu() {
   $("menu").hidden = true;
+  menuMode = null;
 }
 
 $("document").onclick = (event) => {
   const mark = event.target.closest("mark");
-  if (!mark || getSelection().toString()) return;
+  if (!mark || !reviewReady() || getSelection().toString()) return;
   if (mark.dataset.item) {
     const item = items[mark.dataset.item];
     cursor = item.start;
-    showCurrent();
-    showMenu(mark, `Da verificare: ${reason(item)}`, [
-      [item.kind === "PERSON" ? "Aggiungi come persona" : "Aggiungi come dato", () => accept(item)],
-      ["Ignora", () => dismiss(item)],
-    ]);
-  } else if (mark.classList.contains("redact")) {
-    const decision = result.decisions[mark.dataset.decision];
-    const entity = result.entities.find((e) => e.entity_id === decision.tag);
-    showMenu(mark, `${decision.tag}: «${mark.textContent}»`, [
-      ["Lascia in chiaro questa occorrenza", () => keepHere(decision)],
-      ["Lascia in chiaro tutta l'entità", editable(entity) && (() => keepEverywhere(entity))],
-    ]);
+    openChoices(mark, [item], { finding: true });
+  } else {
+    openChoices(mark, [result.decisions[mark.dataset.decision]]);
   }
 };
-document.addEventListener("mousedown", (event) => {
-  if (!event.target.closest("#menu, mark")) hideMenu();
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest("#menu, #selection-actions")) hideMenu();
+  draggingSelection = event.pointerType !== "touch" && $("document").contains(event.target);
 });
+document.addEventListener("pointerup", () => {
+  if (!draggingSelection) return;
+  draggingSelection = false;
+  syncSelectionMenu();
+});
+document.addEventListener("pointercancel", () => { draggingSelection = false; });
 $("document").addEventListener("scroll", hideMenu);
+window.addEventListener("scroll", hideMenu);
+window.addEventListener("resize", hideMenu);
 $("document").addEventListener("keydown", (event) => {
   if (event.target.matches("mark[role=button]") && ["Enter", " "].includes(event.key)) {
     event.preventDefault();
@@ -385,12 +494,22 @@ function row(text, ...buttons) {
   return li;
 }
 
+function applyToFindings(treatment) {
+  if (!reviewReady() || !items.length) return;
+  const findings = items.map((item) =>
+    treatment === "dismiss" ? item.spans : [[item.start, item.end]]);
+  change({ type: "bulk_findings", treatment, findings });
+}
+
+$("findings-ignore-all").onclick = () => applyToFindings("dismiss");
+$("findings-redact-all").onclick = () => applyToFindings("redact");
+
 function showPanel() {
   $("findings-count").textContent = items.length;
+  $("findings-actions").hidden = !items.length;
   $("findings").replaceChildren(...items.map((item) => {
     const li = row(`«${item.text}»: ${reason(item)}`,
-                   button(item.kind === "PERSON" ? "Aggiungi come persona" : "Aggiungi come dato",
-                          () => accept(item)),
+                   button("Modifica", (e) => openChoices(e.currentTarget, [item], { finding: true })),
                    button("Ignora", () => dismiss(item)));
     li.onclick = (event) => {
       if (!event.target.closest("button")) { cursor = item.start; showCurrent(); }
@@ -401,20 +520,31 @@ function showPanel() {
   $("warnings").replaceChildren(...notices.map((warning) => row(warning)));
   $("warnings-count").textContent = notices.length;
   $("warnings-section").hidden = !notices.length;
-  const redacted = result.entities.filter((entity) => entity.action === "redact");
-  const kept = result.entities.filter((entity) => entity.action === "keep");
-  $("redacted-count").textContent = redacted.length;
-  $("redacted").replaceChildren(...redacted.map((entity) => editable(entity)
-    ? row(`${entity.entity_id}: ${quote(entity.aliases)} ×${entity.spans.length}`,
-          button("Lascia in chiaro", () => keepEverywhere(entity)),
-          button("Cambia segnaposto…", () => retag(entity)))
-    : row(`${entity.entity_id}: ${quote(entity.aliases)} ×${entity.spans.length} (cognome condiviso)`)));
-  $("kept-count").textContent = kept.length;
-  $("kept").replaceChildren(...kept.map((entity) => row(
-    `${quote(entity.aliases)} (${entity.kind === "USER" ? "scelta tua" : entity.kind}) ×${entity.spans.length}`)));
-  $("edits").replaceChildren(...actions.map((action) => row(
-    ACTIONS[action.type](action)[3],
-    button("Annulla", () => commit(actions.filter((other) => other !== action))))));
+  // A mixed entity has a row on each side, with the count for that action.
+  // Keep different labels in separate rows, including any local overrides.
+  const entities = new Map(result.entities.map((e) => [e.entity_id, e]));
+  const chars = Array.from(result.text);
+  for (const [action, list] of [["redact", "redacted"], ["keep", "kept"]]) {
+    const groups = new Map();
+    for (const d of result.decisions.filter((d) => d.action === action)) {
+      const key = JSON.stringify([d.owner_id ?? d.start, d.tag]);
+      if (!groups.has(key)) groups.set(key, { spans: [], aliases: new Set() });
+      const group = groups.get(key);
+      group.spans.push(d);
+      group.aliases.add(chars.slice(d.start, d.end).join(""));
+    }
+    const rows = Array.from(groups.values(), ({ spans, aliases }) => {
+      const first = spans[0];
+      const entity = entities.get(first.owner_id);
+      const label = first.tag ?? entity?.role ?? first.kind;
+      return row(`${label}: ${quote([...aliases])} ×${spans.length}`,
+        button("Modifica", (e) => openChoices(e.currentTarget, spans, { grouped: true })));
+    });
+    $(list).replaceChildren(...rows);
+    $(list + "-count").textContent = rows.length;
+  }
+  $("edits").replaceChildren(...actions.map(({ command }, index) => row(
+    describe[command.type](command), button("Annulla", () => removeAction(index)))));
   $("edits-count").textContent = actions.length;
 }
 
@@ -447,7 +577,7 @@ function showCurrent() {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (!result || $("confirm").open || event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  if (!result || event.target.closest?.("dialog, input, textarea, select, [contenteditable]")) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();
     if (event.shiftKey) redo(); else undo();
@@ -455,7 +585,12 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const item = items[currentIndex()];
-  if (event.key === "Escape") hideMenu();
+  if (event.key === "Escape" && menuMode) {
+    if (menuMode === "selection" && $("menu").contains(document.activeElement)) {
+      $("selection-actions").focus({ preventScroll: true });
+    }
+    hideMenu();
+  }
   else if (event.key === "n") move(1);
   else if (event.key === "p") move(-1);
   else if (event.key === "Enter" && item && !event.target.closest?.("button, summary, [role=button], a")) accept(item);
@@ -466,13 +601,51 @@ document.addEventListener("keydown", (event) => {
 
 // --- selection and export --------------------------------------------------------------
 
-// The selected text, if it lies in the document.
+const reviewReady = () => result && $("workspace").getAttribute("aria-busy") === "false";
+
+// Map the DOM range onto the same normalized input and code-point offsets as the engine.
 function selection() {
   const selected = getSelection();
-  if (!selected.rangeCount || !$("document").contains(selected.getRangeAt(0).commonAncestorContainer)) {
-    return "";
-  }
-  return selected.toString().replace(/\s+/g, " ").trim();
+  if (!reviewReady() || !selected.rangeCount || selected.isCollapsed) return null;
+  const range = selected.getRangeAt(0);
+  const reader = $("document");
+  if (!reader.contains(range.commonAncestorContainer)) return null;
+  const raw = range.toString();
+  const trimmed = raw.trim();
+  const text = trimmed.replace(/\s+/g, " ");
+  if (!text) return null;
+  const before = document.createRange();
+  before.selectNodeContents(reader);
+  before.setEnd(range.startContainer, range.startOffset);
+  const start = Array.from(before.toString()).length + raw.length - raw.trimStart().length;
+  const end = start + Array.from(trimmed).length;
+  const overlaps = result.decisions.filter((d) => d.start < end && start < d.end);
+  if (overlaps.some((d) => d.action === "redact" && d.start <= start && end <= d.end)) return null;
+  // A new span must not replace part of an existing redaction or an explicit keep.
+  const single = !overlaps.some((d) => d.action === "redact" || d.source === "user:occurrence");
+  return { range, text, start, end, single };
+}
+
+function showSelectionMenu(selected, focus = false) {
+  const { range, text, start, end, single } = selected;
+  const apply = (type) => () => {
+    getSelection().removeAllRanges();
+    change({ type, text, start, end });
+  };
+  const box = Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect();
+  showMenu(box, "Oscurare il testo selezionato?", [
+    ["Solo questa occorrenza", single && apply("include")],
+    ["Tutte le occorrenze dello stesso testo", apply("term")],
+    ["Persona e varianti del nome", apply("person")],
+  ], { mode: "selection", focus });
+}
+
+function syncSelectionMenu() {
+  if (draggingSelection || (menuMode === "selection" && $("menu").contains(document.activeElement))) return;
+  const selected = selection();
+  $("selection-actions").disabled = !selected;
+  if (selected) showSelectionMenu(selected);
+  else if (menuMode === "selection") hideMenu();
 }
 
 function download(name, blob) {
@@ -497,7 +670,7 @@ function exportAs(extension) {
 // A .docx opened as such comes back with its formatting and the tags in place, unless
 // a redacted text would survive outside the text: then it comes back plain.
 async function save(extension) {
-  const name = `${doc.name.replace(/\.(txt|md|docx)$/i, "")}.pseudonimizzato.${extension}`;
+  const name = `${doc.name.replace(/\.(txt|md|docx|pdf)$/i, "")}.pseudonimizzato.${extension}`;
   if (extension === "txt") {
     return download(name, new Blob([result.output], { type: "text/plain;charset=utf-8" }));
   }
@@ -509,47 +682,99 @@ async function save(extension) {
       return status(`${name}: formattazione conservata. Le eventuali immagini non sono state controllate.`);
     } catch (error) {
       if (!error.refused) return status(`Errore nel salvataggio: ${error.message}`);
-      status(`${error.message} Scaricato il .docx semplice, senza formattazione.`);
+      status(`${error.message} Salvato il .docx semplice, senza formattazione.`);
     }
   }
   download(name, new Blob([await call("docx_bytes", result.output)], { type: DOCX }));
 }
 
-$("open").onchange = async (event) => {
+function updateComposer() {
+  $("analyse-source").disabled = $("open").disabled || !$("source-text").value.trim();
+  const pdfNote = $("pdf-note");
+  pdfNote.textContent = draft?.pdfNote ?? "";
+  pdfNote.hidden = !pdfNote.textContent;
+  $("word-note").hidden = !draft?.docx || $("source-text").value === draft.display;
+}
+
+async function importDocument(readFile) {
+  if ($("open").disabled) return;
+  enableOpening(false);
+  try {
+    await openFile(await readFile());
+  } catch (error) {
+    status(error.refused ? error.message : `Impossibile aprire il documento: ${error.message}`, "error");
+  } finally {
+    enableOpening(true);
+  }
+}
+$("open").onchange = (event) => {
   const file = event.target.files[0];
   event.target.value = "";
-  if (file) await openFile(file);
+  if (file) importDocument(() => file);
 };
-$("example").onclick = async () => {
-  $("example").disabled = $("open").disabled = true;
-  status("Apertura dell’esempio…", "busy");
+$("example").onclick = () => importDocument(async () => {
+  const response = await fetch(new URL("examples/esempio_sentenza.txt", import.meta.url));
+  if (!response.ok) throw new Error("esempio non disponibile");
+  return new File([await response.blob()], "esempio_sentenza.txt");
+});
+$("composer").ondragover = (event) => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  $("composer").classList.add("dragging");
+};
+$("composer").ondragleave = (event) => {
+  if (!$("composer").contains(event.relatedTarget)) $("composer").classList.remove("dragging");
+};
+$("composer").ondrop = (event) => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  $("composer").classList.remove("dragging");
+  const files = event.dataTransfer.files;
+  if (files.length !== 1) return status("È possibile caricare un documento alla volta.", "error");
+  const file = files[0];
+  importDocument(() => file);
+};
+$("source-text").oninput = updateComposer;
+$("composer").onsubmit = async (event) => {
+  event.preventDefault();
+  if ($("analyse-source").disabled) return;
+  const value = $("source-text").value;
+  const original = draft && draft.display === value;
+  enableOpening(false);
   try {
-    const response = await fetch(new URL("examples/esempio_sentenza.txt", import.meta.url));
-    if (!response.ok) throw new Error("esempio non disponibile");
-    await openFile(new File([await response.blob()], "esempio_sentenza.txt"));
-  } catch (error) {
-    status(`Impossibile aprire l’esempio: ${error.message}`, "error");
+    await openText(draft?.name ?? "Testo inserito", original ? draft.raw : value, {
+      docx: original ? draft.docx : null,
+      pdfNote: draft?.pdfNote,
+    });
   } finally {
-    $("example").disabled = $("open").disabled = false;
+    enableOpening(true);
   }
 };
-document.addEventListener("selectionchange", () => {
-  $("add-person").disabled = $("add-other").disabled = !(result && selection());
-});
-for (const id of ["add-person", "add-other"]) {
-  // Keep the selection alive while the button is pressed.
-  $(id).onmousedown = (event) => event.preventDefault();
-}
-$("add-person").onclick = () => selection() && change({ type: "person", text: selection() });
-$("add-other").onclick = () => selection() && change({ type: "term", text: selection() });
+$("new-document").onclick = () => {
+  if (!reviewReady()) return;
+  result = doc = draft = initialState = null;
+  actions = []; past = []; future = []; items = []; cursor = null;
+  for (const id of ["document", "findings", "redacted", "kept", "warnings", "edits"]) $(id).replaceChildren();
+  $("source-text").value = "";
+  hideMenu();
+  $("document-title").textContent = "Preparazione del documento";
+  $("document-format").hidden = true;
+  showReview(false);
+  updateComposer();
+  status("Caricare un documento o inserire il testo.");
+  $("source-text").focus();
+};
+document.addEventListener("selectionchange", syncSelectionMenu);
+$("selection-actions").onmousedown = (event) => event.preventDefault();
+$("selection-actions").onclick = () => {
+  const selected = selection();
+  if (selected) showSelectionMenu(selected, true);
+};
 $("undo").onclick = undo;
 $("redo").onclick = redo;
 $("export-txt").onclick = () => exportAs("txt");
 $("export-docx").onclick = () => exportAs("docx");
 $("confirm-export").onclick = () => save(saving);   // the dialog's form closes it
-$("retag-form").onsubmit = applyRetag;
-$("retag-cancel").onclick = () => $("retag").close();
-$("retag").onclose = () => { retagging = null; };
 if (!/Mac|iPhone|iPad/.test(navigator.userAgent)) {
   for (const key of document.querySelectorAll("kbd")) {
     key.textContent = key.textContent.replace("⇧⌘", "Ctrl+Maiusc+").replace("⌘", "Ctrl+");

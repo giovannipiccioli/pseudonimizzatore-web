@@ -1,5 +1,8 @@
-"""Run the tests against the engine wheel the page ships, not whichever engine is installed."""
+"""Test the same Python wheels the page ships."""
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(next(Path(__file__).parent.glob("vendor/pseudonimizzatore_legale-*.whl"))))
+vendor = Path(__file__).parent / "vendor"
+for package in ("pseudonimizzatore_legale", "pypdf"):
+    wheel, = vendor.glob(f"{package}-*.whl")
+    sys.path.insert(0, str(wheel))

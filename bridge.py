@@ -1,12 +1,13 @@
 """The only Python the page calls:
 
-    review(raw, edits_json, sanitize) -> result_json    analyse, render and verify one document
+    review(raw, state_json, sanitize, action_json) -> result_json    analyse, render and verify one document
+    pdf_text(data) -> result_json                   text and empty page numbers
     docx_text(data) -> str                              the text of a .docx (needs lxml)
     docx_pseudonymized(data, redactions_json) -> bytes  that .docx with the tags in place
     docx_bytes(text) -> bytes                           a plain .docx, one paragraph per line
 
 The browser runs this file under Pyodide in a Web Worker, and the tests run it under
-CPython. It uses only the engine's public API (`analyze`, `render`, `Edits`), so the
+CPython. It uses only the engine's public API and its JSON review state, so the
 engine never needs to know about the page. `Refused` carries a message for the reader.
 """
 from __future__ import annotations
@@ -17,32 +18,165 @@ import json
 import re
 import zipfile
 from collections import defaultdict
-from dataclasses import asdict, fields
+from dataclasses import asdict
 from urllib.parse import unquote
 from xml.sax.saxutils import escape
 
-from pseudonimizzatore_legale import Config, Edits, analyze, render
-
-_EDIT_FIELDS = frozenset(field.name for field in fields(Edits))
+from pseudonimizzatore_legale import Config, TextAnchor, analyze, normalize, render
 
 
 class Refused(ValueError):
-    """A file the page cannot read, with a message in Italian for the reader."""
+    """A review choice or document operation the page can explain to the reader."""
 
 
-def _edits(data: dict) -> Edits:
-    """`Edits` from JSON: each list becomes the tuple `Edits` expects.
+def _underlying(raw, config, state):
+    """Identify the entity underneath local exceptions, even after a one-off rename."""
+    if not any(c["action"] != "dismiss" for c in state["occurrences"]):
+        return {}
+    base = analyze(raw, config, state={**state, "occurrences": []})
+    return {(d.start, d.end): d for d in base.decisions}
 
-    >>> _edits({"exclude": ["Rossi"], "people": [["Anna Verdi", "Nominativo"]]}).people
-    (('Anna Verdi', 'Nominativo'),)
-    """
-    unknown = set(data) - _EDIT_FIELDS
-    if unknown:
-        raise ValueError(f"unknown edit fields: {sorted(unknown)}")
-    return Edits(**{
-        name: tuple(tuple(item) if isinstance(item, list) else item for item in items)
-        for name, items in data.items()
-    })
+
+def _clear_exceptions(state, entity_id, raw, config, treatment):
+    """A new entity-wide choice supersedes previous exceptions for its mentions."""
+    if not state["occurrences"]:
+        return
+    base = _underlying(raw, config, state)
+    text = normalize(raw, config)
+    keep = []
+    for choice in state["occurrences"]:
+        if choice["action"] != "dismiss":
+            decision = base.get(TextAnchor(**choice["anchor"]).locate(text))
+            if decision and decision.entity_id == entity_id:
+                continue
+            if choice.get("entity_id") == entity_id and treatment == "keep":
+                choice = {"action": "keep", "anchor": choice["anchor"]}
+        keep.append(choice)
+    state["occurrences"] = keep
+
+
+def _occurrence(state, action, text, placeholder):
+    """Capture normalized selections and replace any previous choice for the same passage."""
+    operation = {"ignore": "dismiss", "include": "redact", "keep": "keep"}[action["type"]]
+    spans = action.get("spans") or [(action["start"], action["end"])]
+    for start, end in spans:
+        try:
+            anchor = asdict(TextAnchor.capture(text, start, end))
+        except ValueError:
+            raise Refused("Il passo e il suo contesto non lo identificano in modo univoco. "
+                          "È necessaria una selezione più ampia.") from None
+        choices = state["occurrences"]
+        choices[:] = [c for c in choices if c["anchor"] != anchor
+                      or (c["action"] == "dismiss") != (operation == "dismiss")]
+        choice = {"action": operation, "anchor": anchor}
+        if operation == "redact" and action.get("target"):
+            choice["entity_id"] = action["target"]
+        elif operation == "redact" and action.get("tag"):
+            choice["placeholder"] = action["tag"]
+        elif operation == "redact" and placeholder:
+            choice["placeholder"] = placeholder
+        choices.append(choice)
+
+
+def _bulk_findings(state, action, raw, config):
+    """Apply one treatment to the listed findings as a single review correction."""
+    treatment = action["treatment"]
+    if treatment not in ("redact", "dismiss"):
+        raise ValueError("invalid bulk treatment")
+    text = normalize(raw, config)
+    # A finding can overlap a decision already made elsewhere in the review.
+    # Leave it for individual review instead of replacing that decision.
+    decisions = analyze(raw, config, state=state).decisions if treatment == "redact" else ()
+    skipped = 0
+    for spans in action["findings"]:
+        if any(d.start < end and start < d.end for start, end in spans for d in decisions):
+            skipped += 1
+            continue
+        command = {"type": "ignore" if treatment == "dismiss" else "include", "spans": spans}
+        # One merged finding can cover several verifier spans. If any anchor is
+        # ambiguous, leave the entire finding for individual review.
+        snapshot = state["occurrences"][:]
+        try:
+            _occurrence(state, command, text, None)
+        except Refused:
+            state["occurrences"] = snapshot
+            skipped += 1
+    return {"count": len(action["findings"]) - skipped, "skipped": skipped}
+
+
+def _apply(state, action, raw, config):
+    """Apply one UI command to a decoded report.state. IDs survive placeholder changes."""
+    kind = action["type"]
+    reserved = {r["placeholder"] for group in ("people", "data", "occurrences")
+                for r in state[group] if "placeholder" in r}
+    # After selective undo an earlier item may once again own the requested label.
+    placeholder = action.get("placeholder")
+    if placeholder in reserved:
+        placeholder = None
+    if action.get("target") and not any(r["id"] == action["target"]
+                                        for r in state["people"] + state["data"]):
+        return False
+    if kind in ("include", "keep", "ignore"):
+        _occurrence(state, action, normalize(raw, config), placeholder)
+        return True
+    if kind in ("person", "term"):
+        collection, field = ("people", "name") if kind == "person" else ("data", "value")
+        value = action["text"]
+
+        def key(spelling):
+            words = spelling.casefold().split()
+            return sorted(words) if kind == "person" else words
+
+        wanted = key(value)
+        matches = [r for r in state[collection]
+                   if any(key(v) == wanted for v in [r[field], *r.get("aliases", [])])]
+        if len(matches) > 1:
+            raise Refused("Il testo corrisponde a più entità. È necessario selezionare una singola occorrenza.")
+        if matches:
+            row = matches[0]
+            # A discovery can cover only some copies (e.g. Roma as a birthplace).
+            # Register the selected spelling as an explicit document-wide match.
+            aliases = row.setdefault("aliases", [])
+            if value not in aliases:
+                aliases.append(value)
+        else:
+            row = {"id": action["id"], field: value}
+            if placeholder:
+                row["placeholder"] = placeholder
+            state[collection].append(row)
+        if action.get("tag"):
+            row["placeholder"] = action["tag"]
+        row["action"] = "redact"
+        return True
+
+    entities = {r["id"]: r for group in ("people", "data") for r in state[group]}
+    row = entities.get(action["id"])
+    if row is None:  # Selective undo removed the entity this later command referred to.
+        return False
+    if kind in ("exclude", "redact"):
+        treatment = "keep" if kind == "exclude" else "redact"
+        _clear_exceptions(state, row["id"], raw, config, treatment)
+        if action.get("tag"):
+            row["placeholder"] = action["tag"]
+        row["action"] = treatment
+    elif kind == "merge":
+        target = entities.get(action["into"])
+        if target is None:
+            return False
+        field = "name" if "name" in target else "value"
+        if field not in row:
+            raise Refused("Si possono unire due persone oppure due dati.")
+        _clear_exceptions(state, row["id"], raw, config, "redact")
+        target["action"] = "redact"
+        spellings = [*target.get("aliases", []), row[field], *row.get("aliases", [])]
+        target["aliases"] = list(dict.fromkeys(v for v in spellings if v != target[field]))
+        state["people" if field == "name" else "data"].remove(row)
+        for choice in state["occurrences"]:
+            if choice.get("entity_id") == action["id"]:
+                choice["entity_id"] = action["into"]
+    else:
+        raise ValueError(f"unknown review action: {kind}")
+    return True
 
 
 def output_to_input(decisions, start: int, end: int) -> tuple[int, int]:
@@ -86,10 +220,11 @@ def input_findings(text: str, decisions, residuals) -> list[dict]:
     mapped = []
     for finding in residuals:
         start, end = output_to_input(decisions, finding.start, finding.end)
-        mapped.append({**asdict(finding), "start": start, "end": end})
+        mapped.append({**asdict(finding), "start": start, "end": end, "spans": [(start, end)]})
     merged: list[dict] = []
     for finding in sorted(mapped, key=lambda finding: (finding["start"], -finding["end"])):
         if merged and finding["start"] < merged[-1]["end"]:
+            merged[-1]["spans"].extend(finding["spans"])
             merged[-1]["end"] = max(merged[-1]["end"], finding["end"])
         else:
             merged.append(finding)
@@ -113,7 +248,7 @@ def partial_keeps(decisions) -> list[dict]:
     warnings = []
     for decision in decisions:
         words = _words(decision.text)
-        if decision.kind != "USER" or not words:
+        if decision.action != "keep" or decision.source != "user:occurrence" or not words:
             continue
         tags = sorted({tag for tag, other in redactions if words <= other})
         if tags:
@@ -122,32 +257,75 @@ def partial_keeps(decisions) -> list[dict]:
     return warnings
 
 
-def review(raw: str, edits_json: str = "{}", sanitize: bool = True) -> str:
-    """Analyse ``raw`` with the reviewer's edits, render it, and return both as JSON.
+def review(raw: str, state_json: str = "null", sanitize: bool = True, action_json: str = "null") -> str:
+    """Review a document, optionally applying a single correction to its previous state.
 
-    Every offset refers to ``text``, the normalized input, which is what the page
-    shows: ``findings`` are the engine's residuals mapped back from the output. Send
-    ``mapping`` back as ``prior_tags`` so that tags keep their numbers between edits.
-    ``sanitize=False`` skips the engine's clean-up pass, so that ``text`` has the
-    offsets of ``raw`` (see `docx_text`).
+    All display offsets refer to normalized input. For Word, normalization is disabled
+    so the accepted decisions can be written back to the original text runs.
     """
-    analysis = analyze(raw, Config(sanitize=sanitize), edits=_edits(json.loads(edits_json)))
+    config = Config(sanitize=sanitize, keep_roles=("giudice",))
+    state, action = json.loads(state_json), json.loads(action_json)
+    applied = False
+    bulk = None
+    if action and action["type"] == "bulk_findings":
+        bulk = _bulk_findings(state, action, raw, config)
+        applied = bulk["count"] > 0
+    elif action:
+        applied = _apply(state, action, raw, config)
+    try:
+        analysis = analyze(raw, config, state=state)
+    except ValueError as error:
+        if "duplicate placeholder" in str(error):
+            raise Refused("Questo segnaposto è già assegnato. È necessario scegliere un segnaposto diverso.") from None
+        raise
     output, report = render(analysis)
+    base = _underlying(raw, config, report.state)
+    decisions = []
+    for d in analysis.decisions:
+        owner = base.get((d.start, d.end), d) if d.source == "user:occurrence" else d
+        decisions.append({"start": d.start, "end": d.end, "action": d.action, "kind": d.kind,
+                          "tag": d.replacement, "entity_id": d.entity_id, "source": d.source,
+                          "owner_id": owner.entity_id if owner.source != "alias:ambiguous" else None})
     return json.dumps({
         "text": analysis.text,
         "output": output,
-        "decisions": [
-            {"start": d.start, "end": d.end, "action": d.action, "kind": d.kind,
-             "tag": d.replacement}
-            for d in analysis.decisions
-        ],
+        "decisions": decisions,
         "entities": [asdict(entity) for entity in analysis.entities],
-        "mapping": analysis.mapping,
+        "state": report.state,
+        "applied": applied,
+        "bulk": bulk,
+        "unresolved": report.unresolved,
         "status": report.status,
         "findings": input_findings(analysis.text, analysis.decisions, report.residuals),
         "partial_keeps": partial_keeps(analysis.decisions),
         "warnings": report.warnings,
     }, ensure_ascii=False)
+
+
+def pdf_text(data) -> str:
+    """Extract embedded text in page order and report pages that yielded no text."""
+    from pypdf import PdfReader
+    from pypdf.errors import DependencyError, PyPdfError
+
+    pages = []
+    empty_pages = []
+    try:
+        with PdfReader(io.BytesIO(data)) as reader:
+            if reader.is_encrypted:
+                raise Refused("Il PDF è protetto. È necessaria una copia senza protezione.")
+            for number, page in enumerate(reader.pages, start=1):
+                text = page.extract_text().strip()
+                if text:
+                    pages.append(text)
+                else:
+                    empty_pages.append(number)
+    except DependencyError:
+        raise Refused("Il PDF è protetto. È necessaria una copia senza protezione.") from None
+    except (PyPdfError, OSError) as error:
+        raise Refused("Impossibile leggere il PDF. È necessaria una copia leggibile.") from error
+    if not pages:
+        raise Refused("Il PDF non contiene testo estraibile. Se è una scansione, serve una copia con testo selezionabile.")
+    return json.dumps({"text": "\n\n".join(pages), "empty_pages": empty_pages}, ensure_ascii=False)
 
 
 # --- .docx -------------------------------------------------------------------------
@@ -168,8 +346,8 @@ _PARTS = (
 )
 _NOT_DOCX = ("Il file non è un documento Word .docx leggibile. I file .doc e quelli protetti "
              "da password non sono supportati: salvali da Word come .docx.")
-_TRACKED = ("Il documento contiene revisioni (modifiche rilevate). Aprilo in Word, accetta o "
-            "rifiuta tutte le modifiche (Revisione › Accetta / Rifiuta) e salvalo di nuovo.")
+_TRACKED = ("Il documento contiene revisioni (modifiche rilevate). È necessario aprire il file in Word, accettare o "
+            "rifiutare tutte le modifiche (Revisione › Accetta / Rifiuta) e salvarlo di nuovo.")
 
 
 def _xml(data: bytes):

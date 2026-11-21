@@ -2,7 +2,7 @@
 # Rebuild vendor/pseudonimizzatore_legale-*.whl from the engine repo next to this one.
 #
 #   ./build_engine_wheel.sh          # from ../anonymizer's working tree (development)
-#   ./build_engine_wheel.sh v0.4.0   # from a tag or commit of ../anonymizer (release)
+#   ./build_engine_wheel.sh vX.Y.Z   # from a tag or commit of ../anonymizer (release)
 #
 # The engine is built from a copy, so nothing is written into ../anonymizer. Needs a
 # Python with pip and setuptools>=68 (PYTHON, default python3).

@@ -45,13 +45,14 @@ refuse to run WebAssembly from a file opened with a double click. It serves the 
 own computer and nothing else.
 
 The first time, the page loads the engine (about 7 MB, from your own server) and in a second
-or so says **"Motore pronto"**. From then on, each document takes a fraction of a second.
+or so enables the document controls. From then on, each document takes a fraction of a second.
 
 ## 2. A first document
 
-The repository includes an invented decision to try the page on,
-[`examples/esempio_sentenza.txt`](examples/esempio_sentenza.txt). Click **Apri documento** and open it, or use **Prova con un esempio** on the
-welcome screen to load it directly.
+Type or paste in **Testo da analizzare**, drop a .txt, .md, .docx or .pdf into it, or choose
+**Apri documento**. The box shows the imported text before analysis. **Prova con un esempio**
+fills it with an [invented decision](examples/esempio_sentenza.txt). Choose **Analizza testo**
+to start reviewing. **Nuovo documento** opens a fresh input box.
 
 The text appears on the left with three kinds of highlight:
 
@@ -65,7 +66,7 @@ The same person gets the same tag everywhere. "Ferruccio Malaspina" in the headi
 Malaspina" in the body both become `Nominativo_1`, and the sister mentioned by first name
 alone (`Ortensia`) gets the same tag as `Ortensia Vimercati`.
 
-By default the engine follows the conventions for publishing Italian court decisions:
+The web app uses the engine’s `keep_roles=("giudice",)` setting for Italian court decisions:
 
 | replaced | kept |
 |---|---|
@@ -77,80 +78,71 @@ By default the engine follows the conventions for publishing Italian court decis
 
 The panel on the right lists everything, in five sections:
 
-- **Da verificare**: what the final check would have you look at, with two buttons.
+- **Da verificare** lists the passages flagged by the final check.
 - **Avvisi**: warnings, for example a name you kept in one place but not in another.
 - **Oscurati**: every replaced entity, its tag and how many times it appears.
 - **Lasciati in chiaro**: what is kept, and why.
-- **Le tue modifiche**: the corrections you have made, each one undoable.
+- **Modifiche**: the corrections you have made, each one undoable.
 
 ## 3. Correcting the result
 
-Each correction is applied at once to the whole document, and the tags keep their numbers.
+Changes take effect as you make them, and the tags keep their numbers.
 
 ### Something should be replaced but isn't
 
-In the example, the surveyor "geometra Brambillasca" has no title the engine recognises and
-stays in clear. **Select it with the mouse** and click **Persona** in the **Oscura la selezione** toolbar
-("redact the selection: person").
+Select text in the reader, for example “Wolfgang Hartmann” in the sample. A menu
+opens next to the selection. **Oscura la selezione…** in the toolbar opens the same menu.
 
-![Selecting a surname the engine missed](docs/images/3-selezione.png)
+- **Solo questa occorrenza** replaces the selected passage. Other occurrences keep their
+  existing treatment. The engine uses a `Dato` tag for a new selection.
+- **Tutte le occorrenze dello stesso testo** finds that text throughout the document, even
+  with different capitalization or spacing. This works for references and other literal data.
+- **Persona e varianti del nome** looks for the same person, including recognised variants
+  such as the surname alone or “SURNAME Name” when you select a full name.
 
-The name becomes `Nominativo_5` everywhere it appears, in capitals or not. Select a full
-name and its other forms are found too: the surname alone and "SURNAME Name". For data that
-is not a person (a policy number, a cadastral reference) use **Altro dato** in the same toolbar ("redact the selection: other data"). That replaces exactly that text wherever it
-appears.
+### Review a highlight or a sidebar entry
 
-### Something is replaced but should stay
+Click a yellow, green or pink highlight, or choose **Modifica** in the sidebar. Both open
+the same form. The document starts on **Solo questa occorrenza**. A grouped sidebar entry
+starts on **Tutta l’entità**. Switch to a single occurrence to pick the passage by its context.
 
-**Click the highlight.** A small menu offers two choices:
+- Choose **Oscura** or **Lascia in chiaro**. For a redaction you can enter the replacement
+  directly in **Segnaposto**. A choice for the whole entity also updates previously
+  overridden mentions of that entity.
+- For **Da verificare**, you can redact just that passage, all copies of the expression,
+  or the person and their name variants. **Ignora segnalazione** dismisses that finding.
+- **Oscura tutti** in **Da verificare** redacts the listed passages with automatic
+  placeholders. **Ignora tutti** dismisses the findings and leaves the text visible. Passages that overlap
+  an existing decision during bulk redaction, or cannot be anchored uniquely, need individual
+  review. Undo restores the whole batch in one step.
+- To reuse another entity’s label at one passage, choose **Collega questa occorrenza**.
+  To merge two people or two data entries, select the whole entity, enter the other label
+  and confirm **Unisci le due entità**.
 
-![The menu that opens on a highlighted name](docs/images/2-menu-su-un-nome.png)
-
-- **Lascia in chiaro questa occorrenza**: keep only this occurrence;
-- **Lascia in chiaro tutta l'entità**: keep the whole entity everywhere, for example a
-  public figure or a company that is not a party.
-
-If you keep a name in one place and leave it replaced elsewhere, **Avvisi** says so: a
-reader could connect the two.
-
-### Points to check
-
-The **Da verificare** list comes from a deliberately suspicious final check. It flags
-anything that looks like a name and is still in clear, so it also raises false alarms such as
-"IN NOME DEL POPOLO". For each item:
-
-- **Aggiungi come persona** if it really is a person;
-- **Ignora** if it isn't.
-
-From the keyboard: <kbd>n</kbd> and <kbd>p</kbd> move to the next and previous item,
-<kbd>Invio</kbd> (Enter) adds it as a person, and <kbd>Canc</kbd> (Delete) ignores it.
-
-### Changing a tag
-
-Next to each replaced entity, **Cambia segnaposto…** lets you choose another tag, for
-example `Attore_1` instead of `Nominativo_1`. If you type the tag of **another** entity, the
-two merge into one. That is useful when the same person appears in two spellings the engine
-did not connect, for example an OCR typo.
+The sidebar keeps the counts, aliases, warnings and correction history. A partial keep
+can reveal a connection to a redacted name elsewhere. **Avvisi** flags this for review.
+Use **n** and **p** to navigate findings, **Enter** to accept the suggested category and
+**Delete** to dismiss the finding.
 
 ### Undo
 
 <kbd>⌘Z</kbd> undoes and <kbd>⇧⌘Z</kbd> redoes (<kbd>Ctrl</kbd> on Windows and Linux). In
-**Le tue modifiche**, each correction also has its own **Annulla** (undo) button. The document toolbar also
+**Modifiche**, each correction also has its own **Annulla** (undo) button. The document toolbar also
 has **Annulla** and **Ripeti** buttons.
 
 ## 4. Saving
 
-Two buttons, **Scarica .txt** and **Scarica .docx**. If something is still on the list to
+Two buttons, **Salva .txt** and **Salva .docx**. If something is still on the list to
 check, the page shows it first and asks for confirmation:
 
 ![The check before saving](docs/images/4-controllo-prima-di-scaricare.png)
 
-- **From a .docx you get a .docx with the same formatting**: styles, tables, headers and
+- **An imported .docx keeps its formatting if the source text is unchanged**: styles, tables, headers and
   images stay, and the tags sit where the names were. What says who wrote or edited the file
   is removed: document properties, comment authors, revision authors, the preview thumbnail.
   If a replaced text survives somewhere the page cannot rewrite, such as a link address, the
   page says where and saves a plain .docx instead.
-- **From .txt or .md** the .docx is plain, one paragraph per line.
+- **For PDFs, .txt, .md, and typed, pasted or edited text**, the Word copy is plain, one paragraph per line.
 
 The file takes the original name plus `.pseudonimizzato`, for example
 `ricorso.pseudonimizzato.docx`.
@@ -161,12 +153,14 @@ The file takes the original name plus `.pseudonimizzato`, for example
 - `.txt`, in UTF-8 or Windows-1252;
 - `.md`;
 - `.docx`: body, headers, footers, footnotes and endnotes, comments.
+- `.pdf`: embedded text in page order. The app flags pages without extractable text.
+  The result is available as `.txt` or a plain `.docx`.
 
 A `.docx` with **tracked changes** is refused. Accept or reject them in Word first.
 
-**It does not read**: PDF, scanned documents (it does not do OCR), old `.doc` files. The
-images inside a `.docx` are kept in the formatted copy but are not checked: a name inside an
-image stays.
+Scans need a selectable text layer. For protected PDFs, open an unprotected copy.
+Old `.doc` files can be converted to `.docx` first. Images inside an imported `.docx` stay
+in the formatted copy and are outside text review.
 
 **How much it finds.** The engine was built on Italian court decisions. There, it fully
 removes 96.7% of identities on a benchmark of 124 decisions. On other documents (briefs,
@@ -207,21 +201,20 @@ in a *Web Worker*, so a long document never freezes the page.
 **What happens when you open a document:**
 
 1. The page reads the file. A `.docx` goes to `bridge.docx_text`, which extracts the text
-   with lxml.
-2. `bridge.review(text, corrections)` calls the engine. `analyze` normalizes the text,
+   with lxml. A `.pdf` goes to `bridge.pdf_text`, which loads and extracts the text with pypdf in the worker.
+2. `bridge.review(text)` calls the engine. `analyze` normalizes the text,
    finds people and data, resolves who is who and assigns the tags. `render` rewrites the
    text once and runs the final check.
 3. The bridge returns JSON: the normalized text, the decisions with their positions, the
    panel rows, the tags, and the points to check, mapped back onto the text you see.
 4. The page draws the highlights and the panel from that JSON.
 
-**Corrections are a list, not edits to the text.** Every click (add a person, keep an
-occurrence, rename a tag) appends an action to the list. The page turns the list into the
-engine's `Edits` and analyses the document again from scratch. That takes about 10 ms for a
-decision and about 150 ms for a 100,000-character document. Undo means going back to the
-previous list. The previous tags are passed back in, so the numbers do not change under your
-eyes. A person you add goes through exactly the same steps as one the engine found: other
-spellings, a surname shared with someone else, conflicts with a judge's role.
+The browser keeps the engine’s `report.state` in memory for the open document. A rename
+changes the placeholder on one person or data entry. Keeping a single mention or dismissing a
+finding records its quote and surrounding text. The bridge returns the complete state to the
+engine on the next pass, including the source revision. Reviewing the same source with the
+same state reproduces the same output. Undo restores the previous state. Removing an older
+correction reapplies the later choices that still have a target.
 
 **Saving.** The `.txt` is the rewritten text. The formatted `.docx` comes from
 `bridge.docx_pseudonymized`, which writes the tags into the original file's text runs and
@@ -242,9 +235,9 @@ removes the metadata. The plain one comes from `bridge.docx_bytes`.
 | `index.html`, `app.css` | the page |
 | `app.js` | highlights, panel, keys, the list of corrections, saving |
 | `worker.js` | starts Pyodide and calls `bridge.py` |
-| `bridge.py` | the only Python the page uses: `review`, `docx_text`, `docx_pseudonymized`, `docx_bytes` |
+| `bridge.py` | the only Python the page uses: `review`, `pdf_text`, `docx_text`, `docx_pseudonymized`, `docx_bytes` |
 | `test_bridge.py`, `conftest.py` | tests of the bridge, against the same engine the page ships |
-| `vendor/` | Pyodide, `regex`, `lxml` and the engine, pinned and self-hosted ([VENDOR.md](VENDOR.md)) |
+| `vendor/` | Pyodide, `regex`, `lxml`, `pypdf` and the engine, pinned and self-hosted ([VENDOR.md](VENDOR.md)) |
 | `build_engine_wheel.sh` | rebuilds the engine wheel from a tag of its repository |
 | `examples/` | an invented document to try the page on |
 | `docs/images/` | the screenshots in this README |
@@ -255,23 +248,36 @@ How the engine works inside (detectors, identities, policy, final check) is expl
 
 ## 8. Development
 
+When changing `app.js`, `worker.js` or `bridge.py`, increment the `?v=` number on
+`app.js` in `index.html`. All three files share that version in their URLs so a
+browser can load a consistent set of files after an update.
+
 Bridge tests, under ordinary Python with `regex` and `lxml` installed:
 
 ```bash
 python -m pytest --doctest-modules
 ```
 
-`conftest.py` puts the engine wheel from `vendor/` first on the path, so the tests check the
-same engine the page loads.
+`conftest.py` puts the engine and pypdf wheels from `vendor/` first on the path, so the tests check the
+same engine and PDF importer the page loads.
 
-To **update the engine**, run `./build_engine_wheel.sh vX.Y.Z` with a sibling checkout of
-`pseudonimizzatore-legale` in `../anonymizer`. Then change `ENGINE_WHEEL` in `worker.js` and
-the row in `VENDOR.md`. To **update Pyodide**, follow `VENDOR.md`, which lists each file with
-its sha256.
+The browser uses the engine wheel in `vendor/`. Changes in `../anonymizer` become
+available to the web app after you rebuild and ship that wheel:
+
+1. Run `./build_engine_wheel.sh vX.Y.Z` here with a sibling checkout of
+   `pseudonimizzatore-legale` in `../anonymizer`. Use a new engine version for releases.
+   For a local trial, omit the tag to build from the engine working tree.
+2. Update `ENGINE_WHEEL` in `worker.js` if the filename changed and update the version
+   and SHA-256 in `VENDOR.md`.
+3. Run the bridge tests above and try a document in the browser. Commit the wheel and
+   associated changes in this repository when releasing the web app. If the engine's
+   public API changed, update `bridge.py` and its tests as part of the same release.
+
+To **update Pyodide**, follow `VENDOR.md`, which lists each file with its SHA-256.
 
 ## 9. Licence
 
 MIT, see [`LICENSE`](LICENSE). The files in `vendor/` keep their own licences: MPL-2.0 for
-Pyodide, PSF for CPython, Apache-2.0 for regex, BSD-3-Clause for lxml with MIT and zlib for
+Pyodide, PSF for CPython, Apache-2.0 for regex, BSD-3-Clause for pypdf and lxml with MIT and zlib for
 its libraries, and LGPL-2.1 for GNU libiconv. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
