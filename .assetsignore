@@ -1,0 +1,15 @@
+.git
+.gitignore
+.DS_Store
+.wrangler
+__pycache__
+.pytest_cache
+wrangler.jsonc
+.assetsignore
+README.md
+README.it.md
+VENDOR.md
+docs
+conftest.py
+test_bridge.py
+build_engine_wheel.sh
