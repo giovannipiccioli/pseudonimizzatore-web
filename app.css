@@ -154,6 +154,17 @@ dialog li { padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px;
 .about-intro { max-width: 690px; margin-bottom: 30px; }
 .about-intro p { margin-top: 14px; font-size: 16px; line-height: 1.7; color: var(--muted); }
 .about-content { display: block; }
+.about-intro a, .legal a { color: var(--timbro); text-underline-offset: 3px; }
+.page-footer a { color: inherit; text-underline-offset: 3px; }
+.legal { padding: clamp(18px, 4vw, 36px); }
+.legal > * { max-width: 70ch; }
+.legal h2 { margin: 44px 0 8px; font: 400 22px/1.3 var(--serif); }
+.legal h2:first-child { margin-top: 0; }
+.legal h3 { margin: 26px 0 6px; font-size: 15px; }
+.legal p, .legal ul { margin: 0 0 12px; line-height: 1.7; }
+.legal ul { padding-left: 1.3em; }
+.legal li { margin-bottom: 4px; }
+.legal code { font-size: 13px; }
 .process { padding: clamp(22px, 4vw, 42px); }
 /* The device diagram. The site's box sits over the browser's column, so its arrow is the
    only line that crosses the device's border; --flow-gap and --flow-pad set its length. */
