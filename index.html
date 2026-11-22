@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#ffffff">
 <title>Pseudonimizzatore</title>
-<link rel="stylesheet" href="app.css?v=8">
-<script type="module" src="app.js?v=4"></script>
+<link rel="stylesheet" href="app.css?v=9">
+<script type="module" src="app.js?v=5"></script>
 </head>
 <body>
 <a class="skip-link" href="#workspace">Vai al documento</a>
@@ -16,22 +16,14 @@
       <h1>Pseudonimizzatore</h1>
       <p class="intro-copy">Il programma individua e sostituisce i dati personali nei documenti. È possibile revisionare e modificare le sostituzioni proposte. <a href="come-funziona-pseudonimizzatore.html" target="_blank" rel="noopener">Tutti i dati restano sul dispositivo.</a></p>
     </div>
-    <ol class="steps" aria-label="Come funziona">
-      <li><span>01</span> Apri</li>
-      <li><span>02</span> Verifica</li>
-      <li><span>03</span> Salva</li>
-    </ol>
   </div>
 
   <p id="status" role="status" data-state="busy">Caricamento del motore…</p>
 
   <main id="workspace" tabindex="-1">
-    <section class="document-card" aria-labelledby="document-title">
-      <div class="card-heading">
-        <div class="document-heading">
-          <p class="eyebrow">DOCUMENTO</p>
-          <h2 id="document-title">Preparazione del documento</h2>
-        </div>
+    <section class="document-card" aria-label="Documento">
+      <div id="card-heading" class="card-heading" hidden>
+        <h2 id="document-title"></h2>
         <span id="document-format" class="format-badge" hidden></span>
       </div>
       <div id="document-tools" hidden>
@@ -44,7 +36,7 @@
       </div>
       <form id="composer">
         <label for="source-text">Testo da analizzare</label>
-        <textarea id="source-text" rows="9" spellcheck="false" autocomplete="off"
+        <textarea id="source-text" rows="13" spellcheck="false" autocomplete="off"
           placeholder="Inserire o incollare il testo, oppure trascinare un documento"></textarea>
         <div class="source-actions">
           <button id="analyse-source" class="primary" type="submit" disabled>Analizza testo</button>

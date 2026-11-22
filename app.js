@@ -121,8 +121,18 @@ async function openFile(file) {
   if (!raw.trim()) return status(`${file.name} non contiene testo.`, "error");
   $("source-text").value = raw;
   draft = { name: file.name, raw, docx, pdfNote, display: $("source-text").value };
-  $("document-title").textContent = file.name;
+  showName(file.name);
   status("Documento caricato. Selezionare Analizza testo per iniziare la revisione.");
+}
+
+// The card heading names a document opened from a file. Typed or pasted text has no name to show.
+const PASTED_TEXT = "Testo inserito";
+function showName(name) {
+  const opened = Boolean(name) && name !== PASTED_TEXT;
+  $("card-heading").hidden = !opened;
+  $("document-title").textContent = opened ? name : "";
+  $("document-format").textContent = opened ? (name.match(/\.([^.]+)$/)?.[1] ?? "txt").toUpperCase() : "";
+  $("document-format").hidden = !opened;
 }
 
 function enableOpening(enabled) {
@@ -222,9 +232,7 @@ async function analyse(prefix = [], commands = [], onSuccess = () => {}) {
   showDocument();
   showPanel();
   showReview(true);
-  $("document-title").textContent = doc.name;
-  $("document-format").textContent = (doc.name.match(/\.([^.]+)$/)?.[1] ?? "txt").toUpperCase();
-  $("document-format").hidden = false;
+  showName(doc.name);
   $("undo").disabled = !past.length;
   $("redo").disabled = !future.length;
   $("workspace").setAttribute("aria-busy", "false");
@@ -742,7 +750,7 @@ $("composer").onsubmit = async (event) => {
   const original = draft && draft.display === value;
   enableOpening(false);
   try {
-    await openText(draft?.name ?? "Testo inserito", original ? draft.raw : value, {
+    await openText(draft?.name ?? PASTED_TEXT, original ? draft.raw : value, {
       docx: original ? draft.docx : null,
       pdfNote: draft?.pdfNote,
     });
@@ -757,8 +765,7 @@ $("new-document").onclick = () => {
   for (const id of ["document", "findings", "redacted", "kept", "warnings", "edits"]) $(id).replaceChildren();
   $("source-text").value = "";
   hideMenu();
-  $("document-title").textContent = "Preparazione del documento";
-  $("document-format").hidden = true;
+  showName(null);
   showReview(false);
   updateComposer();
   status("Caricare un documento o inserire il testo.");
