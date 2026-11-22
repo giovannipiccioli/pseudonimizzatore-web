@@ -41,7 +41,7 @@ p { margin: 0; }
 .eyebrow { font-size: 10px; font-weight: 650; letter-spacing: .12em; color: var(--muted); }
 h1 { margin: .45rem 0 .6rem; font: 400 clamp(30px, 3.2vw, 44px)/1.12 var(--serif); letter-spacing: -.035em; }
 .intro-copy { color: var(--muted); font-size: 15px; max-width: 68ch; line-height: 1.6; }
-.intro-copy a { color: var(--keep-ink); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.intro-copy a { color: var(--ink); background: var(--redact); padding: 0 .2em; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .intro-copy a:hover { color: var(--notte); }
 .steps { display: flex; gap: 24px; list-style: none; margin: 0; padding: 0; color: var(--muted); font-size: 12px; }
 .steps li { white-space: nowrap; }
