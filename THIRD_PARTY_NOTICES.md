@@ -72,10 +72,10 @@ The page loads `vendor/pypdf-7.1.1-py3-none-any.whl` on PDF import.
 - Licence: `pypdf-7.1.1.dist-info/licenses/LICENSE` in the wheel.
 - Source: [pypdf 7.1.1 on PyPI](https://pypi.org/project/pypdf/7.1.1/).
 
-## pseudonimizzatore-legale 0.7.0: MIT
+## pseudonimizzatore-legale 0.8.0: MIT
 
-`vendor/pseudonimizzatore_legale-0.7.0-py3-none-any.whl`, built by `build_engine_wheel.sh` from
-the local working tree of <https://github.com/giovannipiccioli/pseudonimizzatore-legale>.
+`vendor/pseudonimizzatore_legale-0.8.0-py3-none-any.whl`, built by `build_engine_wheel.sh` from
+commit `7ff5f69` of <https://github.com/giovannipiccioli/pseudonimizzatore-legale>.
 
 - Licence: inside the wheel, `LICENSE` and `THIRD_PARTY_NOTICES.md`. The latter covers the
   bundled list of first names and the list of ISTAT comuni, both CC BY 4.0.

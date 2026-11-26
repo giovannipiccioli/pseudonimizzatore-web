@@ -3,7 +3,7 @@
 // {id, error, refused}, where `refused` marks a bridge.Refused: a message for the reader.
 import { loadPyodide } from "./vendor/pyodide-314.0.7/pyodide.mjs";
 
-const ENGINE_WHEEL = "vendor/pseudonimizzatore_legale-0.7.0-py3-none-any.whl";
+const ENGINE_WHEEL = "vendor/pseudonimizzatore_legale-0.8.0-py3-none-any.whl";
 const PDF_WHEEL = "vendor/pypdf-7.1.1-py3-none-any.whl";
 const url = (path) => new URL(path, import.meta.url).href;
 const quiet = { messageCallback: () => {} };
