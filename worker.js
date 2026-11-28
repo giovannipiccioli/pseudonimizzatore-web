@@ -16,6 +16,9 @@ async function start() {
   const response = await fetch(bridgeURL);
   if (!response.ok) throw new Error("Impossibile caricare il modulo Python.");
   pyodide.FS.writeFile("bridge.py", await response.text());
+  // The PDF and .docx components are fetched now, so that once the page is ready nothing more
+  // is downloaded and the whole tool works offline. A failure here is retried on first use.
+  await pyodide.loadPackage([url(PDF_WHEEL), "lxml"], quiet).catch(() => {});
   return { pyodide, bridge: pyodide.pyimport("bridge") };
 }
 const ready = start();
